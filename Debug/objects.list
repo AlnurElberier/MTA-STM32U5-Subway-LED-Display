@@ -16,6 +16,7 @@
 "./Core/Src/icache.o"
 "./Core/Src/logging.o"
 "./Core/Src/main.o"
+"./Core/Src/mta_task.o"
 "./Core/Src/rng.o"
 "./Core/Src/rtc.o"
 "./Core/Src/spi.o"

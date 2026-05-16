@@ -84,16 +84,6 @@ const osThreadAttr_t defaultTask_attributes = {
 /* USER CODE BEGIN FunctionPrototypes */
 void vInitTask(void *pvArgs);
 static void vHeartbeatTask(void *pvParameters);
-
-extern void vSubscribePublishTestTask(void*);
-extern void vDefenderAgentTask(void *pvParameters);
-extern void vShadowDeviceTask(void *pvParameters);
-extern void vOTAUpdateTask(void *pvParam);
-extern void otaPal_EarlyInit(void);
-extern void vEnvironmentSensorPublishTask(void *pvParameters);
-extern void vMotionSensorsPublish(void *pvParameters);
-extern void vEchoServerTask(void *pvParameters);
-extern void prvFleetProvisioningTask(void *pvParameters);
 /* USER CODE END FunctionPrototypes */
 
 /* USER CODE BEGIN 5 */
@@ -223,6 +213,18 @@ void StartDefaultTask(void *argument)
 
   xResult = xTaskCreate(vLoggingConsumerTask, "LogTask", 1024, NULL, 10, NULL);
   configASSERT(xResult == pdTRUE);
+
+  ( void ) xEventGroupWaitBits( xSystemEvents,
+                                  EVT_MASK_NET_CONNECTED,
+                                  pdFALSE,          /* Don't clear the bit on exit */
+                                  pdTRUE,           /* Wait for the bit */
+                                  portMAX_DELAY );  /* Block indefinitely until it happens */
+
+
+  LogInfo("Wi-Fi link detected! Spawning asynchronous MTA Protobuf Client...");
+  xResult = xTaskCreate(vMtaApiTask, "MtaClient", 4096, NULL, 12, NULL);
+  configASSERT(xResult == pdTRUE);
+
 
   /* Infinite loop */
   for (;;)
