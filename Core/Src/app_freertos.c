@@ -241,8 +241,8 @@ static void vHeartbeatTask(void *pvParameters)
 {
   (void) pvParameters;
 
-  HAL_GPIO_WritePin( GPIOH, GPIO_PIN_7, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin( GPIOH, GPIO_PIN_6, GPIO_PIN_SET);
+  HAL_GPIO_WritePin( GPIOH, GPIO_PIN_7, GPIO_PIN_RESET); // LED GREEN
+  HAL_GPIO_WritePin( GPIOH, GPIO_PIN_6, GPIO_PIN_SET); // LED RED
 
   while (1)
   {

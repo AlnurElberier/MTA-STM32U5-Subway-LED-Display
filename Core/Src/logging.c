@@ -68,7 +68,7 @@ void vDyingGasp( void )
     /* Pet the watchdog so that the message is not lost */
     vPetWatchdog();
 
-//    pxEarlyUart = vInitUartEarly();
+    pxEarlyUart = vInitUartEarly();
 
     do
     {
@@ -81,8 +81,8 @@ void vDyingGasp( void )
     }
     while( xNumBytes != 0 );
 
-//    HAL_GPIO_WritePin( LED_RED_GPIO_Port, LED_GREEN_Pin, GPIO_PIN_SET );
-//    HAL_GPIO_WritePin( LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_RESET );
+    HAL_GPIO_WritePin( GPIOH, GPIO_PIN_7, GPIO_PIN_SET ); // LED GREEN
+    HAL_GPIO_WritePin( GPIOH, GPIO_PIN_6, GPIO_PIN_RESET ); // LED RED
 }
 
 /*
