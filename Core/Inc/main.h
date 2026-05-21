@@ -79,6 +79,7 @@ void Error_Handler(void);
 #define PSWD "testtesttest"
 
 extern UART_HandleTypeDef huart1;
+extern TIM_HandleTypeDef htim2;
 
 /* USER CODE END Private defines */
 

@@ -17,6 +17,9 @@
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 
+/* LED Matrix */
+#include "led_matrix_task.h"
+
 /* FIX: Explicitly define missing mbedTLS network module error codes for custom profiles */
 #ifndef MBEDTLS_ERR_NET_SEND_FAILED
 #define MBEDTLS_ERR_NET_SEND_FAILED                      -0x004A
@@ -430,6 +433,66 @@ void vMtaApiTask(void *pvParameters)
         }
 
         /* Organize and output chronological timeline schedule data structures */
+		if (giArrivalCount > 0)
+		{
+			qsort(gulArrivalTimestamps, giArrivalCount, sizeof(uint32_t), prvCompareTimestamps);
+
+			/* Fall back to HTTP response header timestamp if protobuf header parser was skipped */
+			if (ulFeedTimestamp == 0)
+			{
+				ulFeedTimestamp = gulArrivalTimestamps[0] - 120; /* Safety guestimate fallback */
+			}
+
+			// Local staging array to hold up to 5 bytes
+			uint8_t ucMinsToEnqueue[5];
+			int iEnqueueCount = 0;
+
+			LogInfo("===============================================================");
+			LogInfo("Upcoming C trains at Clinton-Washington Avs (Manhattan-bound):");
+			LogInfo("===============================================================");
+
+			for (int i = 0; i < giArrivalCount; i++)
+			{
+				/* MATH CORRECTION: Subtraction against the server data generation clock timestamp */
+				int iMinsRemaining = ((int)gulArrivalTimestamps[i] - (int)ulFeedTimestamp) / 60;
+
+				/* Guard layout check to hide records from trains that already passed */
+				if (iMinsRemaining >= 0)
+				{
+					LogInfo("  In %2d min   [Timestamp: %lu]", iMinsRemaining, gulArrivalTimestamps[i]);
+
+					/* ENQUEUE STEP: Collect the top 5 closest trains */
+					if (iEnqueueCount < 5)
+					{
+						// Guard against overflow if a train is somehow > 255 mins away
+						ucMinsToEnqueue[iEnqueueCount++] = (iMinsRemaining > 255) ? 255 : (uint8_t)iMinsRemaining;
+					}
+				}
+			}
+			LogInfo("===============================================================");
+
+			/* Send the fresh snapshot to the stream buffer */
+			if (xMtaTimBuf != NULL)
+			{
+				xStreamBufferReset(xMtaTimBuf); // Flush out the 30-second old batch
+				if (iEnqueueCount > 0)
+				{
+					xStreamBufferSend(xMtaTimBuf, (const void *)ucMinsToEnqueue, iEnqueueCount, 0);
+				}
+			}
+		}
+		else
+		{
+			LogWarn("Feed synchronization success. No Manhattan-bound C lines located.");
+
+			/* If the API says 0 trains, clear the display buffer so it doesn't show old data */
+			if (xMtaTimBuf != NULL)
+			{
+				xStreamBufferReset(xMtaTimBuf);
+			}
+		}
+#if 0
+        /* Organize and output chronological timeline schedule data structures */
         if (giArrivalCount > 0)
         {
             qsort(gulArrivalTimestamps, giArrivalCount, sizeof(uint32_t), prvCompareTimestamps);
@@ -460,6 +523,8 @@ void vMtaApiTask(void *pvParameters)
         {
             LogWarn("Feed synchronization success. No Manhattan-bound C lines located.");
         }
+
+#endif
 
 loop_cleanup:
         if (socket_fd >= 0)

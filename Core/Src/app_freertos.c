@@ -44,6 +44,8 @@
 
 #include "mx_netconn.h"
 
+#include "led_matrix_task.h"
+
 #if defined(__USE_STSAFE__)
 #include "stsafe.h"
 #endif
@@ -159,6 +161,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  vBufferInit();
   /* USER CODE END RTOS_QUEUES */
 
   /* creation of defaultTask */
@@ -205,6 +208,10 @@ void StartDefaultTask(void *argument)
   xSystemEvents = xEventGroupCreate();
 
   xResult = xTaskCreate(vHeartbeatTask, "Heartbeat", 128, NULL, tskIDLE_PRIORITY, NULL);
+  configASSERT(xResult == pdTRUE);
+
+  /* 2. Launch your UI Task immediately so it starts animating right away */
+  xResult = xTaskCreate(vLedMatrixTask, "MatrixUI", 512, NULL, 13, NULL);
   configASSERT(xResult == pdTRUE);
 
   /* Keeps core networking engine active. This will handle initialization and connect to Wi-Fi */

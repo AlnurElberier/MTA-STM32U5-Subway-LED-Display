@@ -13,6 +13,7 @@ RM := rm -rf
 -include Middlewares/Third_Party/lwIP_Network_lwIP/lwip/src/core/ipv4/subdir.mk
 -include Middlewares/Third_Party/lwIP_Network_lwIP/lwip/src/core/subdir.mk
 -include Middlewares/Third_Party/lwIP_Network_lwIP/lwip/src/api/subdir.mk
+-include Middlewares/Third_Party/LED_Matrix/subdir.mk
 -include Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/subdir.mk
 -include Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure/subdir.mk
 -include Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/subdir.mk

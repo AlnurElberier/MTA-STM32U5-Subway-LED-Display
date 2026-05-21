@@ -27,6 +27,7 @@
 #include "spi.h"
 #include "usart.h"
 #include "gpio.h"
+#include "timer.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -106,6 +107,7 @@ int main(void)
   MX_RTC_Init();
   MX_DCACHE1_Init();
   MX_RNG_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
