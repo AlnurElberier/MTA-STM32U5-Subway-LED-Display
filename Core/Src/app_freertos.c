@@ -73,7 +73,6 @@ EventGroupHandle_t xSystemEvents = NULL;
 
 
 /* USER CODE END Variables */
-
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
@@ -163,7 +162,6 @@ void MX_FREERTOS_Init(void) {
   /* add queues, ... */
   vBufferInit();
   /* USER CODE END RTOS_QUEUES */
-
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
@@ -174,8 +172,8 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
   /* USER CODE END RTOS_EVENTS */
-}
 
+}
 /* USER CODE BEGIN Header_StartDefaultTask */
 /**
  * @brief Function implementing the defaultTask thread.
@@ -258,3 +256,4 @@ static void vHeartbeatTask(void *pvParameters)
   }
 }
 /* USER CODE END Application */
+

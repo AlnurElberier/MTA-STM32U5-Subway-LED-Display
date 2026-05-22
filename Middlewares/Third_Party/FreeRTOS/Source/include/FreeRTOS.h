@@ -1064,7 +1064,7 @@
  * Then call like a standard printf() function, but placing brackets around
  * all parameters so they are passed as a single parameter.  For example:
  * configPRINTF( ("Value = %d", MyVariable) ); */
-    #define configPRINTF( X ) printf X
+    #define configPRINTF( X )
 #endif
 
 #ifndef configMAX

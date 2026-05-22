@@ -55,7 +55,9 @@
 									<listOptionValue builtIn="false" value="../Common/include"/>
 									<listOptionValue builtIn="false" value="../Common/config"/>
 									<listOptionValue builtIn="false" value="../Common/sys"/>
-									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/LED_Matrix/Inc"/>
+									<listOptionValue builtIn="false" value="../Common/ARM_Security"/>
+									<listOptionValue builtIn="false" value="../Common/hub75"/>
+									<listOptionValue builtIn="false" value="../Common/hub75/Inc"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input.769476874" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.assembler.input"/>
 							</tool>
@@ -95,8 +97,9 @@
 									<listOptionValue builtIn="false" value="../Common/include"/>
 									<listOptionValue builtIn="false" value="../Common/config"/>
 									<listOptionValue builtIn="false" value="../Common/sys"/>
-									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/LED_Matrix/Inc"/>
-									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/LED_Matrix"/>
+									<listOptionValue builtIn="false" value="../Common/ARM_Security"/>
+									<listOptionValue builtIn="false" value="../Common/hub75"/>
+									<listOptionValue builtIn="false" value="../Common/hub75/Inc"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.244013738" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
 							</tool>
@@ -127,7 +130,8 @@
 						<entry excluding="net/mbedtls_transport.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Common"/>
 						<entry excluding="Src/_app_freertos.c|Src/sysmem.c|Src/crypto/rng_alt_stm32.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
-						<entry excluding="ST/STDIO|Third_Party/FreeRTOS/Source/include/FreeRTOSConfig_template.h" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares"/>
+						<entry excluding="Third_Party/lwIP_Network_lwIP/rte|Third_Party/lwIP_Network_lwIP/ports|ST/STDIO|Third_Party/FreeRTOS/Source/include/FreeRTOSConfig_template.h" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="STDIO"/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>

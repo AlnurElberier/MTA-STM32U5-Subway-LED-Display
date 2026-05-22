@@ -22,6 +22,8 @@ C_DEPS :=
 
 # Every subdirectory with source files must be described here
 SUBDIRS := \
+Common/ARM_Security \
+Common/hub75 \
 Common/net/lwip_port/src \
 Common/net/mxchip \
 Common/sys \
@@ -36,7 +38,6 @@ Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 \
 Middlewares/Third_Party/FreeRTOS/Source \
 Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33_NTZ/non_secure \
 Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang \
-Middlewares/Third_Party/LED_Matrix \
 Middlewares/Third_Party/lwIP_Network_lwIP/lwip/src/api \
 Middlewares/Third_Party/lwIP_Network_lwIP/lwip/src/core \
 Middlewares/Third_Party/lwIP_Network_lwIP/lwip/src/core/ipv4 \
