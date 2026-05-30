@@ -280,6 +280,25 @@ void vMtaApiTask(void *pvParameters)
 
     for (;;)
     {
+    	int networkErr = 0;
+    	/* Check if the network interface is actually up and has an IP address */
+		if (netif_default == NULL ||
+			!netif_is_up(netif_default) ||
+			ip_addr_isany_val(*netif_ip_addr4(netif_default)))
+		{
+			LogWarn("Network is down. Skipping MTA API cycle.");
+
+			// Send a "Connection Lost" sentinel token to the display task if needed
+			if (xMtaTimBuf != NULL) {
+				xStreamBufferReset(xMtaTimBuf);
+				uint8_t ucErrorToken = 0xFF;
+				xStreamBufferSend(xMtaTimBuf, &ucErrorToken, 1, 0);
+			}
+
+			vTaskDelay(pdMS_TO_TICKS(10000)); // Check link status again in 10 seconds
+			continue; // Jump back to the start of the for(;;) loop safely
+		}
+
         LogInfo("Connecting to api-endpoint.mta.info on port 443...");
         giArrivalCount = 0;
 
@@ -299,22 +318,32 @@ void vMtaApiTask(void *pvParameters)
         if (mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)"mta", 3) != 0 ||
             mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0)
         {
+        	networkErr = 1;
             goto loop_cleanup;
         }
 
         mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_NONE);
         mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
-        if (mbedtls_ssl_setup(&ssl, &conf) != 0 || mbedtls_ssl_set_hostname(&ssl, MTA_HOST) != 0) goto loop_cleanup;
+        if (mbedtls_ssl_setup(&ssl, &conf) != 0 || mbedtls_ssl_set_hostname(&ssl, MTA_HOST) != 0)
+		{
+        	networkErr = 1;
+        	goto loop_cleanup;
+		}
 
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
-        if (lwip_getaddrinfo(MTA_HOST, MTA_PORT, &hints, &res) != 0) goto loop_cleanup;
+        if (lwip_getaddrinfo(MTA_HOST, MTA_PORT, &hints, &res) != 0)
+		{
+        	networkErr = 1;
+        	goto loop_cleanup;
+		}
 
         socket_fd = lwip_socket(res->ai_family, res->ai_socktype, res->ai_protocol);
         if (socket_fd < 0 || lwip_connect(socket_fd, res->ai_addr, res->ai_addrlen) < 0)
         {
             lwip_freeaddrinfo(res);
+            networkErr = 1;
             goto loop_cleanup;
         }
         lwip_freeaddrinfo(res);
@@ -322,7 +351,11 @@ void vMtaApiTask(void *pvParameters)
         mbedtls_ssl_set_bio(&ssl, &socket_fd, lwip_mbedtls_send, lwip_mbedtls_recv, NULL);
         while ((ret = mbedtls_ssl_handshake(&ssl)) != 0)
         {
-            if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) goto loop_cleanup;
+            if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
+            {
+            	networkErr = 1;
+            	goto loop_cleanup;
+            }
         }
 
         /* Generate plain, unauthenticated public HTTP/1.1 Header payload */
@@ -342,14 +375,22 @@ void vMtaApiTask(void *pvParameters)
             ret = mbedtls_ssl_read(&ssl, pucHttpBuf + xTotalReadBytes, xHttpBufSize - 1 - xTotalReadBytes);
             if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
             if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == 0) break;
-            if (ret < 0) goto loop_cleanup;
+            if (ret < 0)
+			{
+            	networkErr = 1;
+            	goto loop_cleanup;
+			}
             xTotalReadBytes += ret;
         } while (xTotalReadBytes < xHttpBufSize - 1);
         pucHttpBuf[xTotalReadBytes] = '\0';
 
         /* Isolate the Binary Protobuf Payload Body from HTTP text headers */
         uint8_t *pucBody = (uint8_t *)strstr((char *)pucHttpBuf, "\r\n\r\n");
-        if (!pucBody) goto loop_cleanup;
+        if (!pucBody)
+        {
+        	networkErr = 1;
+        	goto loop_cleanup;
+        }
         pucBody += 4;
         size_t xBodyLength = xTotalReadBytes - (pucBody - pucHttpBuf);
 
@@ -491,42 +532,17 @@ void vMtaApiTask(void *pvParameters)
 				xStreamBufferReset(xMtaTimBuf);
 			}
 		}
-#if 0
-        /* Organize and output chronological timeline schedule data structures */
-        if (giArrivalCount > 0)
-        {
-            qsort(gulArrivalTimestamps, giArrivalCount, sizeof(uint32_t), prvCompareTimestamps);
-
-            /* Fall back to HTTP response header timestamp if protobuf header parser was skipped */
-            if (ulFeedTimestamp == 0)
-            {
-                ulFeedTimestamp = gulArrivalTimestamps[0] - 120; /* Safety guestimate fallback */
-            }
-
-            LogInfo("===============================================================");
-            LogInfo("Upcoming C trains at Clinton-Washington Avs (Manhattan-bound):");
-            LogInfo("===============================================================");
-            for (int i = 0; i < giArrivalCount; i++)
-            {
-                /* MATH CORRECTION: Subtraction against the server data generation clock timestamp */
-                int iMinsRemaining = ((int)gulArrivalTimestamps[i] - (int)ulFeedTimestamp) / 60;
-
-                /* Guard layout check to hide records from trains that already passed */
-                if (iMinsRemaining >= 0)
-                {
-                    LogInfo("  In %2d min   [Timestamp: %lu]", iMinsRemaining, gulArrivalTimestamps[i]);
-                }
-            }
-            LogInfo("===============================================================");
-        }
-        else
-        {
-            LogWarn("Feed synchronization success. No Manhattan-bound C lines located.");
-        }
-
-#endif
 
 loop_cleanup:
+
+		// Send a "Connection Lost" sentinel token to the display task if needed
+		if (networkErr && xMtaTimBuf != NULL) {
+			LogWarn("Network Error: Clearing ETA Buffer.");
+			xStreamBufferReset(xMtaTimBuf);
+			uint8_t ucErrorToken = 0xFF;
+			xStreamBufferSend(xMtaTimBuf, &ucErrorToken, 1, 0);
+		}
+
         if (socket_fd >= 0)
         {
             mbedtls_ssl_close_notify(&ssl);

@@ -56,6 +56,7 @@ void vLedMatrixTask(void *pvParameters) {
 	{
 		/* 1. NON-BLOCKING CHECK: Look for fresh snapshots from the MTA API task.
 		 * Timeout is 0 because we cannot let this block and freeze the scrolling animation. */
+
 		xReceivedBytes = xStreamBufferReceive(
 			xMtaTimBuf,
 			(void *)ucLocalTrainTimes,
@@ -65,23 +66,30 @@ void vLedMatrixTask(void *pvParameters) {
 
 		/* 2. If a fresh update arrived, rebuild our display string */
 		if (xReceivedBytes > 0) {
-			int iOffset = 0;
-			arrival_times[0] = '\0'; // Clear previous string
-
-			for (size_t i = 0; i < xReceivedBytes; i++) {
-				// Append each time formatted as "XXm   "
-				int iWritten = snprintf(arrival_times + iOffset, sizeof(arrival_times) - iOffset,
-										"%02dm   ", ucLocalTrainTimes[i]);
-				if (iWritten > 0) {
-					iOffset += iWritten;
-				}
+			if (ucLocalTrainTimes[0] == 0xFF) {
+				snprintf(arrival_times, sizeof(arrival_times), "Connection Lost");
+				scroll_limit = (int16_t)(-(int16_t)strlen(arrival_times) * FONT_CELL_W);
+				scroll_x = HUB75_COLS; // Reset scroll position so it rolls in cleanly
 			}
+			else {
+				int iOffset = 0;
+				arrival_times[0] = '\0'; // Clear previous string
 
-			/* Recalculate precise bounds for the new text string length */
-			scroll_limit = (int16_t)(-(int16_t)strlen(arrival_times) * FONT_CELL_W);
+				for (size_t i = 0; i < xReceivedBytes; i++) {
+					// Append each time formatted as "XXm   "
+					int iWritten = snprintf(arrival_times + iOffset, sizeof(arrival_times) - iOffset,
+											"%02dm   ", ucLocalTrainTimes[i]);
+					if (iWritten > 0) {
+						iOffset += iWritten;
+					}
+				}
 
-			/* Optional: Reset scroll position to the right edge so new times roll in cleanly */
-			scroll_x = HUB75_COLS;
+				/* Recalculate precise bounds for the new text string length */
+				scroll_limit = (int16_t)(-(int16_t)strlen(arrival_times) * FONT_CELL_W);
+
+				/* Optional: Reset scroll position to the right edge so new times roll in cleanly */
+				scroll_x = HUB75_COLS;
+			}
 		}
 		else if (xStreamBufferIsEmpty(xMtaTimBuf) && strcmp(arrival_times, "Waiting for data...") != 0 && strlen(arrival_times) == 0) {
 			/* If the buffer was wiped clean (e.g., API reported no trains), show a fallback string */
