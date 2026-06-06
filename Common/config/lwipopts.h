@@ -21,6 +21,7 @@
 #define LWIP_HDR_LWIPOPTS_H
 
 #include "lwipopts_freertos.h"
+#include "sntp_sync.h"
 
 /*#define LWIP_IPV6                       1 */
 /*#define LWIP_IPV6_DHCP6                 1 */
@@ -121,7 +122,7 @@
 #define TCP_SND_QUEUELEN    ( 4 * TCP_SND_BUF / TCP_MSS )
 
 /* TCP receive window. */
-#define PBUF_POOL_SIZE      40
+#define PBUF_POOL_SIZE      64 //40
 
 
 #define TCP_MSL             20 * 1000UL /* The maximum segment lifetime in milliseconds */
@@ -137,6 +138,14 @@
 /*#define TCP_OVERSIZE              1 */
 /* when allocating buffer for MXCHIP , an header must be provisionned for TX buffers , default is zero */
 #define PBUF_LINK_ENCAPSULATION_HLEN    28
+
+
+/* =====================================================================
+ * CUSTOM SNTP CONFIGURATION FOR HARDWARE RTC SYNC
+ * ===================================================================== */
+#define SNTP_SET_SYSTEM_TIME(sec)   vUpdateSntpRtc(sec)
+#define SNTP_UPDATE_DELAY           21600000  /* Sync interval: 6 hours in ms */
+
 #endif /* LWIP_HDR_LWIPOPTS_H */
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

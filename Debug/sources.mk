@@ -32,6 +32,7 @@ Core/Src \
 Core/Src/crypto \
 Core/Startup \
 Drivers/STM32U5xx_HAL_Driver/Src \
+Middlewares/ST/STDIO \
 Middlewares/Third_Party/ARM_Security/library \
 Middlewares/Third_Party/AWS_FreeRTOS/coreJSON/source \
 Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 \

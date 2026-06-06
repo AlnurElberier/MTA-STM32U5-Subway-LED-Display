@@ -91,7 +91,7 @@
  * MEM_SIZE: the size of the heap memory. If the application will send
  * a lot of data that needs to be copied, this should be set high.
  */
-#define MEM_SIZE    ( 50 * 1600 )
+#define MEM_SIZE    (64 * 1024) // ( 100 * 1600 )
 
 /*
  * ------------------------------------------------
@@ -101,19 +101,19 @@
 
 /* MEMP_NUM_UDP_PCB: the number of UDP protocol control blocks. One
  * per active UDP "connection". */
-#define MEMP_NUM_UDP_PCB           8
+#define MEMP_NUM_UDP_PCB           4
 
 /* MEMP_NUM_TCP_PCB: the number of simultaneously active TCP
  * connections. */
-#define MEMP_NUM_TCP_PCB           32
+#define MEMP_NUM_TCP_PCB           4
 
 /* MEMP_NUM_TCP_PCB_LISTEN: the number of listening TCP
  * connections. */
-#define MEMP_NUM_TCP_PCB_LISTEN    32 /*16 original */
+#define MEMP_NUM_TCP_PCB_LISTEN    1 /*16 original */
 
 /* MEMP_NUM_TCP_SEG: the number of simultaneously queued TCP
  * segments. */
-#define MEMP_NUM_TCP_SEG           255
+#define MEMP_NUM_TCP_SEG           128
 
 /* MEMP_NUM_ARP_QUEUE: the number of simultaneously queued outgoing
  * packets (pbufs) that are waiting for an ARP request (to resolve
@@ -124,7 +124,7 @@
  * MEMP_NUM_NETCONN: the number of struct netconns.
  * (only needed if you use the sequential API, like api_lib.c)
  */
-#define MEMP_NUM_NETCONN           32
+#define MEMP_NUM_NETCONN           4
 
 /*
  * ----------------------------------
@@ -148,10 +148,10 @@
 #define TCP_MSS        1476
 
 /* TCP sender buffer space (bytes). */
-#define TCP_SND_BUF    ( 24 * 1024 )        /*(12 * 1024) */
+#define TCP_SND_BUF    ( 32 * 1024 )        /*(12 * 1024) */
 
 /* TCP receive window. */
-#define TCP_WND        ( 24 * 1024 )
+#define TCP_WND        ( 40 * 1460 ) //( 24 * 1024 )
 
 /*
  * ---------------------------------

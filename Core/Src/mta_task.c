@@ -2,25 +2,26 @@
 #include "logging.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "stream_buffer.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
-#include <stdbool.h>  /* FIX: Explicitly provides bool, true, and false definitions */
+#include <stdbool.h>
 
 /* lwIP network layer includes */
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
+#include "lwip/netif.h"
 
 /* mbedTLS security layer includes */
 #include "mbedtls/ssl.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 
-/* LED Matrix */
+/* LED Matrix Shared Buffer */
 #include "led_matrix_task.h"
 
-/* FIX: Explicitly define missing mbedTLS network module error codes for custom profiles */
+/* Explicitly define missing mbedTLS network module error codes for custom profiles */
 #ifndef MBEDTLS_ERR_NET_SEND_FAILED
 #define MBEDTLS_ERR_NET_SEND_FAILED                      -0x004A
 #endif
@@ -28,18 +29,28 @@
 #define MBEDTLS_ERR_NET_RECV_FAILED                      -0x004C
 #endif
 
-/* MTA API Configurations (Completely Unauthenticated Public Endpoint) */
+/* MTA API Configurations */
 #define MTA_HOST          "api-endpoint.mta.info"
 #define MTA_PORT          "443"
 #define MTA_URI           "/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace"
 #define MAX_ARRIVALS      32
+#define HTTP_BUF_SIZE     (160 * 1024)
 
-/* Global storage array for matched transit timestamps */
+/* Network context wrapper structure to minimize function parameters */
+typedef struct {
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_entropy_context entropy;
+    int socket_fd;
+} MtaNetContext_t;
+
+/* Global static storage array for matched transit timestamps */
 static uint32_t gulArrivalTimestamps[MAX_ARRIVALS];
 static int giArrivalCount = 0;
 
 /* =====================================================================
- * CORE EMBEDDED PROTOCOL BUFFER STREAM DECODERS
+ * PARSER LAYER: CORE EMBEDDED PROTOCOL BUFFER STREAM DECODERS
  * ===================================================================== */
 
 /**
@@ -62,7 +73,7 @@ static bool prvReadVarint(uint8_t **ppucPtr, uint8_t *pucEnd, uint32_t *pulValue
         iShift += 7;
         if (iShift >= 32) return false; /* Overflow Protection */
     }
-    return false; /* FIX: Added explicit terminal return to eliminate warning path */
+    return false;
 }
 
 /**
@@ -188,6 +199,9 @@ static void prvParseTripUpdate(uint8_t *pucData, uint32_t ulLen)
 
     while (p < end)
     {
+        /* Cooperative Yield: Prevent display starvation during large array steps */
+        vTaskDelay(0);
+
         uint32_t ulTag; if (!prvReadVarint(&p, end, &ulTag)) break;
         uint32_t ulField = ulTag >> 3;
         uint32_t ulWire = ulTag & 0x07;
@@ -233,7 +247,93 @@ static void prvParseTripUpdate(uint8_t *pucData, uint32_t ulLen)
     }
 }
 
-/* Quick comparison sorting helper for chronological timestamp arrangements */
+/**
+ * @brief Master decoding parser loop that sweeps through the payload buffer.
+ */
+static uint32_t prvMtaDecodeProtobufFeed(uint8_t *pucBody, size_t xBodyLength)
+{
+    uint32_t ulFeedTimestamp = 0;
+    uint8_t *p = pucBody;
+    uint8_t *end = pucBody + xBodyLength;
+
+    while (p < end)
+    {
+        /* Cooperative Yield: Keeps the LED Matrix tracking rows fluid during decompression */
+        vTaskDelay(0);
+
+        uint32_t ulTag; if (!prvReadVarint(&p, end, &ulTag)) break;
+        uint32_t ulField = ulTag >> 3;
+        uint32_t ulWire = ulTag & 0x07;
+
+        if (ulWire == 2)
+        {
+            uint32_t ulLength; prvReadVarint(&p, end, &ulLength);
+
+            if (ulField == 1) /* Parse FeedHeader */
+            {
+                uint8_t *hp = p;
+                uint8_t *h_end = p + ulLength;
+                while (hp < h_end)
+                {
+                    uint32_t ulHTag; if (!prvReadVarint(&hp, h_end, &ulHTag)) break;
+                    uint32_t ulHField = ulHTag >> 3;
+                    uint32_t ulHWire = ulHTag & 0x07;
+
+                    if (ulHField == 3 && ulHWire == 0) /* timestamp field */
+                    {
+                        prvReadVarint(&hp, h_end, &ulFeedTimestamp);
+                    }
+                    else
+                    {
+                        if (ulHWire == 0) { uint32_t v; prvReadVarint(&hp, h_end, &v); }
+                        else if (ulHWire == 2) { uint32_t l; prvReadVarint(&hp, h_end, &l); hp += l; }
+                        else if (ulHWire == 1) hp += 8;
+                        else if (ulHWire == 5) hp += 4;
+                        else break;
+                    }
+                }
+            }
+            else if (ulField == 2) /* Parse FeedEntity array */
+            {
+                uint8_t *ep = p;
+                uint8_t *e_end = p + ulLength;
+                while (ep < e_end)
+                {
+                    uint32_t ulETag; if (!prvReadVarint(&ep, e_end, &ulETag)) break;
+                    uint32_t ulEField = ulETag >> 3;
+                    uint32_t ulEWire = ulETag & 0x07;
+
+                    if (ulEWire == 2)
+                    {
+                        uint32_t ulELength; prvReadVarint(&ep, e_end, &ulELength);
+                        if (ulEField == 3) /* TripUpdate block match */
+                        {
+                            prvParseTripUpdate(ep, ulELength);
+                        }
+                        ep += ulELength;
+                    }
+                    else
+                    {
+                        if (ulEWire == 0) { uint32_t v; prvReadVarint(&ep, e_end, &v); }
+                        else if (ulEWire == 1) ep += 8;
+                        else if (ulEWire == 5) ep += 4;
+                        else break;
+                    }
+                }
+            }
+            p += ulLength;
+        }
+        else
+        {
+            if (ulWire == 0) { uint32_t v; prvReadVarint(&p, end, &v); }
+            else if (ulWire == 1) p += 8;
+            else if (ulWire == 5) p += 4;
+            else break;
+        }
+    }
+    return ulFeedTimestamp;
+}
+
 static int prvCompareTimestamps(const void *a, const void *b)
 {
     uint32_t ulA = *(const uint32_t *)a;
@@ -242,7 +342,7 @@ static int prvCompareTimestamps(const void *a, const void *b)
 }
 
 /* =====================================================================
- * NETWORK DRIVER SOCKET AND MBEDTLS DATASTREAM LOOP
+ * NETWORK LAYER: DRIVER SOCKETS AND MBEDTLS DATASTREAM INTERFACES
  * ===================================================================== */
 
 static int lwip_mbedtls_send(void *ctx, const unsigned char *buf, size_t len)
@@ -261,309 +361,334 @@ static int lwip_mbedtls_recv(void *ctx, unsigned char *buf, size_t len)
     return (ret < 0) ? MBEDTLS_ERR_NET_RECV_FAILED : ret;
 }
 
-void vMtaApiTask(void *pvParameters)
+/**
+ * @brief Establishes connection, configures SO_LINGER, and completes the TLS handshake.
+ */
+static int prvMtaConnectSecureEndpoint(MtaNetContext_t *pxNet)
 {
     int ret;
-    int socket_fd = -1;
     struct addrinfo hints, *res;
 
-    /* Dynamically allocate network buffer chunk from FreeRTOS heap memory */
-    const size_t xHttpBufSize = 96 * 1024;
+    mbedtls_ssl_init(&pxNet->ssl);
+    mbedtls_ssl_config_init(&pxNet->conf);
+    mbedtls_ctr_drbg_init(&pxNet->ctr_drbg);
+    mbedtls_entropy_init(&pxNet->entropy);
+    pxNet->socket_fd = -1;
+
+    if (mbedtls_ctr_drbg_seed(&pxNet->ctr_drbg, mbedtls_entropy_func, &pxNet->entropy, (const unsigned char *)"mta", 3) != 0 ||
+        mbedtls_ssl_config_defaults(&pxNet->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0)
+    {
+        return -1;
+    }
+
+    mbedtls_ssl_conf_authmode(&pxNet->conf, MBEDTLS_SSL_VERIFY_NONE);
+    mbedtls_ssl_conf_rng(&pxNet->conf, mbedtls_ctr_drbg_random, &pxNet->ctr_drbg);
+
+    if (mbedtls_ssl_setup(&pxNet->ssl, &pxNet->conf) != 0 || mbedtls_ssl_set_hostname(&pxNet->ssl, MTA_HOST) != 0)
+    {
+        return -1;
+    }
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (lwip_getaddrinfo(MTA_HOST, MTA_PORT, &hints, &res) != 0)
+    {
+        return -1;
+    }
+
+    pxNet->socket_fd = lwip_socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (pxNet->socket_fd < 0)
+    {
+        lwip_freeaddrinfo(res);
+        return -1;
+    }
+
+    /* SO_LINGER 0: Force instant socket deletion on close to clear out PBUF memory pools */
+    struct linger xLingerOpt = { .l_onoff = 1, .l_linger = 0 };
+    lwip_setsockopt(pxNet->socket_fd, SOL_SOCKET, SO_LINGER, &xLingerOpt, sizeof(xLingerOpt));
+
+    /* RCVTIMEO: Prevent tasks from blocking infinitely if the Wi-Fi link flakes */
+    uint32_t ulTimeoutMs = 6000;
+    lwip_setsockopt(pxNet->socket_fd, SOL_SOCKET, SO_RCVTIMEO, &ulTimeoutMs, sizeof(ulTimeoutMs));
+
+    if (lwip_connect(pxNet->socket_fd, res->ai_addr, res->ai_addrlen) < 0)
+    {
+        lwip_freeaddrinfo(res);
+        lwip_close(pxNet->socket_fd);
+        return -1;
+    }
+    lwip_freeaddrinfo(res);
+
+    mbedtls_ssl_set_bio(&pxNet->ssl, &pxNet->socket_fd, lwip_mbedtls_send, lwip_mbedtls_recv, NULL);
+
+    while ((ret = mbedtls_ssl_handshake(&pxNet->ssl)) != 0)
+    {
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
+        {
+            lwip_close(pxNet->socket_fd);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Handles the secure streaming read loop and separates HTTP header metadata.
+ */
+static int prvMtaFetchPayload(mbedtls_ssl_context *psSsl, uint8_t *pucBuffer, size_t xBufSize, uint8_t **ppucBodyOut, size_t *pxBodyLenOut)
+{
+    size_t xTotalReadBytes = 0;
+    int iConsecutiveTimeouts = 0;
+    size_t xExpectedBodyLength = 0;
+    bool fParsedHeader = false;
+    uint8_t *pucBodyStart = NULL;
+    int ret;
+
+    /* Assemble and transmit public plaintext GET string */
+    int iTxLen = snprintf((char *)pucBuffer, xBufSize,
+                          "GET %s HTTP/1.1\r\n"
+                          "Host: %s\r\n"
+                          "User-Agent: STM32U5\r\n"
+                          "Accept: */*\r\n"
+                          "Connection: close\r\n\r\n",
+                          MTA_URI, MTA_HOST);
+    mbedtls_ssl_write(psSsl, pucBuffer, iTxLen);
+
+    /* Ingress streaming engine */
+    do {
+        size_t xRemainingSpace = xBufSize - 1 - xTotalReadBytes;
+        if (xRemainingSpace == 0) break;
+
+        ret = mbedtls_ssl_read(psSsl, &pucBuffer[xTotalReadBytes], xRemainingSpace);
+
+        if (ret > 0)
+        {
+            xTotalReadBytes += ret;
+            iConsecutiveTimeouts = 0;
+            pucBuffer[xTotalReadBytes] = '\0';
+
+            if (!fParsedHeader)
+            {
+                char *pcContentLengthStr = strstr((char *)pucBuffer, "Content-Length: ");
+                if (pcContentLengthStr != NULL)
+                {
+                    xExpectedBodyLength = strtoul(pcContentLengthStr + 16, NULL, 10);
+                    fParsedHeader = true;
+                    LogInfo("Found HTTP Content-Length: %d bytes", xExpectedBodyLength);
+                }
+            }
+
+            if (fParsedHeader && xExpectedBodyLength > 0)
+            {
+                if (pucBodyStart == NULL)
+                {
+                    pucBodyStart = (uint8_t *)strstr((char *)pucBuffer, "\r\n\r\n");
+                    if (pucBodyStart != NULL) pucBodyStart += 4;
+                }
+
+                if (pucBodyStart != NULL)
+                {
+                    size_t xCurrentBodyBytes = xTotalReadBytes - (pucBodyStart - pucBuffer);
+                    if (xCurrentBodyBytes >= xExpectedBodyLength) break; /* Download complete! */
+                }
+            }
+        }
+        else if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+        {
+            if (++iConsecutiveTimeouts >= 3) {
+                LogWarn("Data stream stalled. Processing partial payload of %d bytes.", xTotalReadBytes);
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        else if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == 0)
+        {
+            break;
+        }
+        else
+        {
+            LogError("mbedTLS secure read error: %d", ret);
+            return -1;
+        }
+    } while (xTotalReadBytes < xBufSize - 1);
+
+    if (pucBodyStart == NULL)
+    {
+        pucBodyStart = (uint8_t *)strstr((char *)pucBuffer, "\r\n\r\n");
+        if (pucBodyStart == NULL) return -1;
+        pucBodyStart += 4;
+    }
+
+    *ppucBodyOut = pucBodyStart;
+    *pxBodyLenOut = xTotalReadBytes - (pucBodyStart - pucBuffer);
+    return 0;
+}
+
+/**
+ * @brief Tears down secure context handles and closes the physical socket descriptor.
+ */
+static void prvMtaDisconnectSecureEndpoint(MtaNetContext_t *pxNet)
+{
+    if (pxNet->socket_fd >= 0)
+    {
+        mbedtls_ssl_close_notify(&pxNet->ssl);
+        lwip_close(pxNet->socket_fd);
+        pxNet->socket_fd = -1;
+    }
+    mbedtls_ssl_free(&pxNet->ssl);
+    mbedtls_ssl_config_free(&pxNet->conf);
+    mbedtls_ctr_drbg_free(&pxNet->ctr_drbg);
+    mbedtls_entropy_free(&pxNet->entropy);
+}
+
+/* =====================================================================
+ * POST-PROCESSING LAYER: CALCULATION PIPELINES & IPC DISPATCHERS
+ * ===================================================================== */
+
+/**
+ * @brief Computes delta relative minutes and writes snapshots to the StreamBuffer.
+ */
+static void prvMtaPostProcessArrivals(uint32_t ulFeedTimestamp)
+{
+    if (giArrivalCount > 0)
+    {
+        qsort(gulArrivalTimestamps, giArrivalCount, sizeof(uint32_t), prvCompareTimestamps);
+
+        if (ulFeedTimestamp == 0)
+        {
+            ulFeedTimestamp = gulArrivalTimestamps[0] - 120; /* Guestimate offset safety window */
+        }
+
+        uint8_t ucMinsToEnqueue[5];
+        int iEnqueueCount = 0;
+
+        LogInfo("===============================================================");
+        LogInfo("Upcoming C trains at Clinton-Washington Avs (Manhattan-bound):");
+        LogInfo("===============================================================");
+
+        for (int i = 0; i < giArrivalCount; i++)
+        {
+            int iMinsRemaining = ((int)gulArrivalTimestamps[i] - (int)ulFeedTimestamp) / 60;
+
+            if (iMinsRemaining >= 0)
+            {
+                LogInfo("  In %2d min   [Timestamp: %lu]", iMinsRemaining, gulArrivalTimestamps[i]);
+
+                if (iEnqueueCount < 5)
+                {
+                    ucMinsToEnqueue[iEnqueueCount++] = (iMinsRemaining > 255) ? 255 : (uint8_t)iMinsRemaining;
+                }
+            }
+        }
+        LogInfo("===============================================================");
+
+        if (xMtaTimBuf != NULL)
+        {
+            xStreamBufferReset(xMtaTimBuf);
+            if (iEnqueueCount > 0)
+            {
+                xStreamBufferSend(xMtaTimBuf, (const void *)ucMinsToEnqueue, iEnqueueCount, 0);
+            }
+        }
+    }
+    else
+    {
+        LogWarn("Feed synchronization success. No Manhattan-bound C lines located.");
+        if (xMtaTimBuf != NULL) xStreamBufferReset(xMtaTimBuf);
+    }
+}
+
+/**
+ * @brief Dispatch error sentinel token to prevent the display from showing frozen metrics.
+ */
+static void prvMtaDispatchErrorToken(void)
+{
+    if (xMtaTimBuf != NULL)
+    {
+        xStreamBufferReset(xMtaTimBuf);
+        uint8_t ucErrorToken = 0xFF;
+        xStreamBufferSend(xMtaTimBuf, &ucErrorToken, 1, 0);
+    }
+}
+
+/* =====================================================================
+ * ORCHESTRATOR LAYER: THE MASTER FreeRTOS LOOP ENGINE
+ * ===================================================================== */
+
+void vMtaApiTask(void *pvParameters)
+{
+    MtaNetContext_t xNetCtx;
     uint8_t *pucHttpBuf = NULL;
-
-    mbedtls_ssl_context ssl;
-    mbedtls_ssl_config conf;
-    mbedtls_ctr_drbg_context ctr_drbg;
-    mbedtls_entropy_context entropy;
-
     (void)pvParameters;
 
     for (;;)
     {
-    	int networkErr = 0;
-    	/* Check if the network interface is actually up and has an IP address */
-		if (netif_default == NULL ||
-			!netif_is_up(netif_default) ||
-			ip_addr_isany_val(*netif_ip_addr4(netif_default)))
-		{
-			LogWarn("Network is down. Skipping MTA API cycle.");
+        bool fNetworkError = false;
 
-			// Send a "Connection Lost" sentinel token to the display task if needed
-			if (xMtaTimBuf != NULL) {
-				xStreamBufferReset(xMtaTimBuf);
-				uint8_t ucErrorToken = 0xFF;
-				xStreamBufferSend(xMtaTimBuf, &ucErrorToken, 1, 0);
-			}
-
-			vTaskDelay(pdMS_TO_TICKS(10000)); // Check link status again in 10 seconds
-			continue; // Jump back to the start of the for(;;) loop safely
-		}
-
-        LogInfo("Connecting to api-endpoint.mta.info on port 443...");
-        giArrivalCount = 0;
-
-        pucHttpBuf = pvPortMalloc(xHttpBufSize);
-        if (!pucHttpBuf)
+        /* 1. Network hardware guard check */
+        if (netif_default == NULL || !netif_is_up(netif_default) ||
+            ip_addr_isany_val(*netif_ip_addr4(netif_default)))
         {
-            LogError("Dynamic memory allocation failed. Postponing query cycle.");
+            LogWarn("Network interface is offline. Postponing cycle.");
+            prvMtaDispatchErrorToken();
             vTaskDelay(pdMS_TO_TICKS(10000));
             continue;
         }
 
-        mbedtls_ssl_init(&ssl);
-        mbedtls_ssl_config_init(&conf);
-        mbedtls_ctr_drbg_init(&ctr_drbg);
-        mbedtls_entropy_init(&entropy);
+        giArrivalCount = 0;
 
-        if (mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)"mta", 3) != 0 ||
-            mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0)
+        /* 2. FreeRTOS Heap allocation */
+        pucHttpBuf = pvPortMalloc(HTTP_BUF_SIZE);
+        if (!pucHttpBuf)
         {
-        	networkErr = 1;
+            LogError("RAM allocation failed. Postponing cycle.");
+            vTaskDelay(pdMS_TO_TICKS(10000));
+            continue;
+        }
+
+        /* 3. Secure Handshake Connection Execution */
+        if (prvMtaConnectSecureEndpoint(&xNetCtx) != 0)
+        {
+            LogError("Secure endpoint connection failed.");
+            fNetworkError = true;
             goto loop_cleanup;
         }
 
-        mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_NONE);
-        mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
-        if (mbedtls_ssl_setup(&ssl, &conf) != 0 || mbedtls_ssl_set_hostname(&ssl, MTA_HOST) != 0)
-		{
-        	networkErr = 1;
-        	goto loop_cleanup;
-		}
-
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        if (lwip_getaddrinfo(MTA_HOST, MTA_PORT, &hints, &res) != 0)
-		{
-        	networkErr = 1;
-        	goto loop_cleanup;
-		}
-
-        socket_fd = lwip_socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-        if (socket_fd < 0 || lwip_connect(socket_fd, res->ai_addr, res->ai_addrlen) < 0)
+        /* 4. Stream extraction parsing */
+        uint8_t *pucBody = NULL;
+        size_t xBodyLength = 0;
+        if (prvMtaFetchPayload(&xNetCtx.ssl, pucHttpBuf, HTTP_BUF_SIZE, &pucBody, &xBodyLength) != 0)
         {
-            lwip_freeaddrinfo(res);
-            networkErr = 1;
+            LogError("Payload retrieval failed.");
+            fNetworkError = true;
             goto loop_cleanup;
         }
-        lwip_freeaddrinfo(res);
 
-        mbedtls_ssl_set_bio(&ssl, &socket_fd, lwip_mbedtls_send, lwip_mbedtls_recv, NULL);
-        while ((ret = mbedtls_ssl_handshake(&ssl)) != 0)
-        {
-            if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
-            {
-            	networkErr = 1;
-            	goto loop_cleanup;
-            }
-        }
+        /* 5. Zero-Copy Protobuf Data Parse */
+        uint32_t ulFeedTimestamp = prvMtaDecodeProtobufFeed(pucBody, xBodyLength);
 
-        /* Generate plain, unauthenticated public HTTP/1.1 Header payload */
-        int iTxLen = snprintf((char *)pucHttpBuf, xHttpBufSize,
-                              "GET %s HTTP/1.1\r\n"
-                              "Host: %s\r\n"
-                              "User-Agent: STM32U5\r\n"
-                              "Accept: */*\r\n"
-                              "Connection: close\r\n\r\n",
-                              MTA_URI, MTA_HOST);
-
-        mbedtls_ssl_write(&ssl, pucHttpBuf, iTxLen);
-
-        /* Download incoming binary packages sequentially until network stream terminates */
-        size_t xTotalReadBytes = 0;
-        do {
-            ret = mbedtls_ssl_read(&ssl, pucHttpBuf + xTotalReadBytes, xHttpBufSize - 1 - xTotalReadBytes);
-            if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) continue;
-            if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == 0) break;
-            if (ret < 0)
-			{
-            	networkErr = 1;
-            	goto loop_cleanup;
-			}
-            xTotalReadBytes += ret;
-        } while (xTotalReadBytes < xHttpBufSize - 1);
-        pucHttpBuf[xTotalReadBytes] = '\0';
-
-        /* Isolate the Binary Protobuf Payload Body from HTTP text headers */
-        uint8_t *pucBody = (uint8_t *)strstr((char *)pucHttpBuf, "\r\n\r\n");
-        if (!pucBody)
-        {
-        	networkErr = 1;
-        	goto loop_cleanup;
-        }
-        pucBody += 4;
-        size_t xBodyLength = xTotalReadBytes - (pucBody - pucHttpBuf);
-
-        /* --- Master Protobuf Stream Iterator --- */
-        uint32_t ulFeedTimestamp = 0; /* New baseline internal clock variable */
-        uint8_t *p = pucBody;
-        uint8_t *end = pucBody + xBodyLength;
-        while (p < end)
-        {
-            uint32_t ulTag; if (!prvReadVarint(&p, end, &ulTag)) break;
-            uint32_t ulField = ulTag >> 3;
-            uint32_t ulWire = ulTag & 0x07;
-
-            if (ulWire == 2)
-            {
-                uint32_t ulLength; prvReadVarint(&p, end, &ulLength);
-
-                /* EXTRACT BASELINE CLOCK: Parse FeedHeader (Field 1) */
-                if (ulField == 1)
-                {
-                    uint8_t *hp = p;
-                    uint8_t *h_end = p + ulLength;
-                    while (hp < h_end)
-                    {
-                        uint32_t ulHTag; if (!prvReadVarint(&hp, h_end, &ulHTag)) break;
-                        uint32_t ulHField = ulHTag >> 3;
-                        uint32_t ulHWire = ulHTag & 0x07;
-
-                        if (ulHField == 3 && ulHWire == 0) /* timestamp field */
-                        {
-                            prvReadVarint(&hp, h_end, &ulFeedTimestamp);
-                        }
-                        else
-                        {
-                            if (ulHWire == 0) { uint32_t v; prvReadVarint(&hp, h_end, &v); }
-                            else if (ulHWire == 2) { uint32_t l; prvReadVarint(&hp, h_end, &l); hp += l; }
-                            else if (ulHWire == 1) hp += 8;
-                            else if (ulHWire == 5) hp += 4;
-                            else break;
-                        }
-                    }
-                }
-                /* PROCESS LIVE TRAIN ENTITIES: Parse FeedEntity (Field 2) */
-                else if (ulField == 2)
-                {
-                    uint8_t *ep = p;
-                    uint8_t *e_end = p + ulLength;
-                    while (ep < e_end)
-                    {
-                        uint32_t ulETag; if (!prvReadVarint(&ep, e_end, &ulETag)) break;
-                        uint32_t ulEField = ulETag >> 3;
-                        uint32_t ulEWire = ulETag & 0x07;
-
-                        if (ulEWire == 2)
-                        {
-                            uint32_t ulELength; prvReadVarint(&ep, e_end, &ulELength);
-                            if (ulEField == 3) /* TripUpdate block match verified */
-                            {
-                                prvParseTripUpdate(ep, ulELength);
-                            }
-                            ep += ulELength;
-                        }
-                        else
-                        {
-                            if (ulEWire == 0) { uint32_t v; prvReadVarint(&ep, e_end, &v); }
-                            else if (ulEWire == 1) ep += 8;
-                            else if (ulEWire == 5) ep += 4;
-                            else break;
-                        }
-                    }
-                }
-                p += ulLength;
-            }
-            else
-            {
-                if (ulWire == 0) { uint32_t v; prvReadVarint(&p, end, &v); }
-                else if (ulWire == 1) p += 8;
-                else if (ulWire == 5) p += 4;
-                else break;
-            }
-        }
-
-        /* Organize and output chronological timeline schedule data structures */
-		if (giArrivalCount > 0)
-		{
-			qsort(gulArrivalTimestamps, giArrivalCount, sizeof(uint32_t), prvCompareTimestamps);
-
-			/* Fall back to HTTP response header timestamp if protobuf header parser was skipped */
-			if (ulFeedTimestamp == 0)
-			{
-				ulFeedTimestamp = gulArrivalTimestamps[0] - 120; /* Safety guestimate fallback */
-			}
-
-			// Local staging array to hold up to 5 bytes
-			uint8_t ucMinsToEnqueue[5];
-			int iEnqueueCount = 0;
-
-			LogInfo("===============================================================");
-			LogInfo("Upcoming C trains at Clinton-Washington Avs (Manhattan-bound):");
-			LogInfo("===============================================================");
-
-			for (int i = 0; i < giArrivalCount; i++)
-			{
-				/* MATH CORRECTION: Subtraction against the server data generation clock timestamp */
-				int iMinsRemaining = ((int)gulArrivalTimestamps[i] - (int)ulFeedTimestamp) / 60;
-
-				/* Guard layout check to hide records from trains that already passed */
-				if (iMinsRemaining >= 0)
-				{
-					LogInfo("  In %2d min   [Timestamp: %lu]", iMinsRemaining, gulArrivalTimestamps[i]);
-
-					/* ENQUEUE STEP: Collect the top 5 closest trains */
-					if (iEnqueueCount < 5)
-					{
-						// Guard against overflow if a train is somehow > 255 mins away
-						ucMinsToEnqueue[iEnqueueCount++] = (iMinsRemaining > 255) ? 255 : (uint8_t)iMinsRemaining;
-					}
-				}
-			}
-			LogInfo("===============================================================");
-
-			/* Send the fresh snapshot to the stream buffer */
-			if (xMtaTimBuf != NULL)
-			{
-				xStreamBufferReset(xMtaTimBuf); // Flush out the 30-second old batch
-				if (iEnqueueCount > 0)
-				{
-					xStreamBufferSend(xMtaTimBuf, (const void *)ucMinsToEnqueue, iEnqueueCount, 0);
-				}
-			}
-		}
-		else
-		{
-			LogWarn("Feed synchronization success. No Manhattan-bound C lines located.");
-
-			/* If the API says 0 trains, clear the display buffer so it doesn't show old data */
-			if (xMtaTimBuf != NULL)
-			{
-				xStreamBufferReset(xMtaTimBuf);
-			}
-		}
+        /* 6. Post-Process Chronology Sorting & IPC Dispatch */
+        prvMtaPostProcessArrivals(ulFeedTimestamp);
 
 loop_cleanup:
 
-		// Send a "Connection Lost" sentinel token to the display task if needed
-		if (networkErr && xMtaTimBuf != NULL) {
-			LogWarn("Network Error: Clearing ETA Buffer.");
-			xStreamBufferReset(xMtaTimBuf);
-			uint8_t ucErrorToken = 0xFF;
-			xStreamBufferSend(xMtaTimBuf, &ucErrorToken, 1, 0);
-		}
-
-        if (socket_fd >= 0)
+        if (fNetworkError)
         {
-            mbedtls_ssl_close_notify(&ssl);
-            lwip_close(socket_fd);
-            socket_fd = -1;
+            prvMtaDispatchErrorToken();
         }
-        mbedtls_ssl_free(&ssl);
-        mbedtls_ssl_config_free(&conf);
-        mbedtls_ctr_drbg_free(&ctr_drbg);
-        mbedtls_entropy_free(&entropy);
 
-        /* Wipe heap allocations immediately to maintain system stability */
+        /* 7. Drop socket tracking blocks instantly */
+        prvMtaDisconnectSecureEndpoint(&xNetCtx);
+
         if (pucHttpBuf)
         {
             vPortFree(pucHttpBuf);
             pucHttpBuf = NULL;
         }
 
-        /* Pull down data frames every 30 seconds */
-        vTaskDelay(pdMS_TO_TICKS(30000));
+        /* 8. Wait 10 seconds before downloading the next live snapshot */
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
-
-

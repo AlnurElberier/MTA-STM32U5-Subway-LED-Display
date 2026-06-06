@@ -19,6 +19,7 @@ RM := rm -rf
 -include Middlewares/Third_Party/FreeRTOS/Source/subdir.mk
 -include Middlewares/Third_Party/AWS_FreeRTOS/coreJSON/source/subdir.mk
 -include Middlewares/Third_Party/ARM_Security/library/subdir.mk
+-include Middlewares/ST/STDIO/subdir.mk
 -include Drivers/STM32U5xx_HAL_Driver/Src/subdir.mk
 -include Core/Startup/subdir.mk
 -include Core/Src/crypto/subdir.mk

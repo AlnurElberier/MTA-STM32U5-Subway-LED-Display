@@ -80,6 +80,9 @@ void Error_Handler(void);
 
 extern UART_HandleTypeDef huart1;
 extern TIM_HandleTypeDef htim2;
+extern RTC_HandleTypeDef hrtc;
+extern RNG_HandleTypeDef hrng;
+
 
 /* USER CODE END Private defines */
 

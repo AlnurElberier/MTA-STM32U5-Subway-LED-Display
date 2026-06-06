@@ -46,6 +46,10 @@
 
 #include "led_matrix_task.h"
 
+#include "lwip/tcpip.h"
+#include "lwip/apps/sntp.h"
+#include "sntp_sync.h"
+
 #if defined(__USE_STSAFE__)
 #include "stsafe.h"
 #endif
@@ -188,29 +192,14 @@ void StartDefaultTask(void *argument)
 
   (void) argument;
 
-#if defined(__USE_STSAFE__)
-  bool stsafe_status;
-
-  stsafe_status = SAFEA1_Init();
-
-  if (stsafe_status)
-  {
-    LogInfo("STSAFE-A1xx initialized successfully");
-  }
-  else
-  {
-    LogError("STSAFE-A1xx NOT initialized");
-  }
-#endif
-
   xSystemEvents = xEventGroupCreate();
 
   xResult = xTaskCreate(vHeartbeatTask, "Heartbeat", 128, NULL, tskIDLE_PRIORITY, NULL);
   configASSERT(xResult == pdTRUE);
 
-  /* 2. Launch your UI Task immediately so it starts animating right away */
-  xResult = xTaskCreate(vLedMatrixTask, "MatrixUI", 512, NULL, 13, NULL);
-  configASSERT(xResult == pdTRUE);
+//  /* 2. Launch your UI Task immediately so it starts animating right away */
+//  xResult = xTaskCreate(vLedMatrixTask, "MatrixUI", 512, NULL, 11, NULL);
+//  configASSERT(xResult == pdTRUE);
 
   /* Keeps core networking engine active. This will handle initialization and connect to Wi-Fi */
   xResult = xTaskCreate(net_main, "MxNet", 1024, NULL, 23, NULL);
@@ -226,8 +215,28 @@ void StartDefaultTask(void *argument)
                                   portMAX_DELAY );  /* Block indefinitely until it happens */
 
 
-  LogInfo("Wi-Fi link detected! Spawning asynchronous MTA Protobuf Client...");
-  xResult = xTaskCreate(vMtaApiTask, "MtaClient", 4096, NULL, 12, NULL);
+  LogInfo("Wi-Fi link detected!");
+
+  LOCK_TCPIP_CORE(); /* Claims exclusive ownership of the network stack */
+
+  sntp_setoperatingmode(SNTP_OPMODE_POLL);
+
+  ip_addr_t ntp_server_ip;
+  IP_ADDR4(&ntp_server_ip, 216, 239, 35, 0); /* Google Anycast NTP */
+  sntp_setserver(0, &ntp_server_ip);
+  sntp_init(); /* Safe to call now because the core is locked */
+
+  UNLOCK_TCPIP_CORE(); /* Releases control back to the system */
+
+  ( void ) xEventGroupWaitBits( xSystemEvents,
+		  	  	  	  	  	  	  EVT_MASK_TIME_SYNCED,
+                                  pdFALSE,          /* Don't clear the bit on exit */
+                                  pdTRUE,           /* Wait for the bit */
+                                  portMAX_DELAY );  /* Block indefinitely until it happens */
+
+  /* 2. Spawn your MTA Client Task */
+  LogInfo("Spawning MTA Protobuf Client...");
+  xResult = xTaskCreate(vMtaApiTask, "MtaClient", 4096, NULL, 20, NULL);
   configASSERT(xResult == pdTRUE);
 
 
