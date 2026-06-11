@@ -185,4 +185,49 @@ static inline void HUB75_ScrollString3x5(int16_t x_offset, int16_t y, const char
     }
 }
 
+
+/* ─── 3x5 Vertical Scroll Rendering ─────────────────────────────────────── */
+/**
+ * @brief  Draws two 3x5 strings stacked vertically with a y offset for
+ *         up-scroll animations. Clips pixels outside [y_base, y_base+8].
+ * @param  x        Left edge of the column region
+ * @param  y_base   Top of the 8px region (e.g. row 8)
+ * @param  str_top  The string currently on top (scrolling out upward)
+ * @param  str_next The string sliding in from below
+ * @param  y_offset Current scroll offset (0 = settled, counts down to -FONT3X5_H)
+ * @param  r,g,b    Color
+ */
+static inline void HUB75_DrawVertScroll3x5(int16_t x,      int16_t y_base,
+                                            const char *str_top,
+                                            const char *str_next,
+                                            int8_t      y_offset,
+                                            uint8_t r, uint8_t g, uint8_t b)
+{
+    /* Top string sliding out — sits at y_base + y_offset */
+    int16_t y_top  = y_base + y_offset;
+
+    /* Next string sliding in from below — sits one font height below top */
+    int16_t y_next = y_top + FONT3X5_H + 1;
+
+    /* Draw both strings; HUB75_DrawChar3x5 already clips per-pixel
+     * to [0, HUB75_ROWS) so out-of-bounds rows are silently dropped */
+    int16_t cx = x;
+    const char *s = str_top;
+    while (*s) {
+        if (cx >= HUB75_COLS) break;
+        HUB75_DrawChar3x5(cx, y_top, *s, r, g, b);
+        cx += FONT3X5_CELL_W;
+        s++;
+    }
+
+    cx = x;
+    s  = str_next;
+    while (*s) {
+        if (cx >= HUB75_COLS) break;
+        HUB75_DrawChar3x5(cx, y_next, *s, r, g, b);
+        cx += FONT3X5_CELL_W;
+        s++;
+    }
+}
+
 #endif /* HUB75_FONT3X5_H */
