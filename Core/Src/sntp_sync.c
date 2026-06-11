@@ -23,6 +23,9 @@ void vUpdateSntpRtc(uint32_t epoch_time)
     time_t raw_time = (time_t)epoch_time;
     struct tm time_info; // Allocated on the local stack
 
+    // Apply NYC EDT offset (UTC-4)
+    raw_time -= (4 * 3600);
+
     /* FIX: Use the thread-safe reentrant version */
     gmtime_r(&raw_time, &time_info);
 

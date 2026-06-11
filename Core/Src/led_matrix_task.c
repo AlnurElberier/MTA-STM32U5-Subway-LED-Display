@@ -11,12 +11,35 @@
 #include "task.h"
 #include "stream_buffer.h"
 #include "message_buffer.h"
+#include "time.h"
 
 #include "led_matrix_task.h"
 #include "hub75_font5x7.h"
+#include "hub75_font3x5.h"
 #include <string.h>
 
 volatile StreamBufferHandle_t xMtaTimBuf = NULL;
+extern RTC_HandleTypeDef hrtc;
+
+
+HAL_StatusTypeDef getHeaderString(char *timBuf) {
+
+	RTC_DateTypeDef date;
+	RTC_TimeTypeDef time;
+
+
+	if (HAL_OK != HAL_RTC_GetTime(&hrtc, &time, RTC_FORMAT_BIN)) return HAL_ERROR;
+
+	if (HAL_OK != HAL_RTC_GetDate(&hrtc, &date, RTC_FORMAT_BIN)) return HAL_ERROR;
+
+	sprintf(timBuf, "%02d %02d:%02d",
+	    date.Date,
+		time.Hours > 12 ? time.Hours - 12 : time.Hours,
+	    time.Minutes);
+
+	return HAL_OK;
+
+}
 
 
 void vBufferInit(void) {
@@ -35,7 +58,12 @@ void vLedMatrixTask(void *pvParameters) {
 
 	HUB75_Init();
 
-	const char *line_header = "CLine";
+//	const char *line_header = "CLine";
+
+	char timBuf[16] = {'/0'};
+
+	getHeaderString(timBuf);
+
 	/* Dynamic string buffer to hold the formatted text (e.g., "03m   08m   14m...") */
 	char arrival_times[64] = "Waiting for data...";
 
@@ -63,6 +91,8 @@ void vLedMatrixTask(void *pvParameters) {
 			sizeof(ucLocalTrainTimes),
 			0  // Do not block
 		);
+
+		getHeaderString(timBuf);
 
 		/* 2. If a fresh update arrived, rebuild our display string */
 		if (xReceivedBytes > 0) {
@@ -101,7 +131,7 @@ void vLedMatrixTask(void *pvParameters) {
 		HUB75_Clear();
 
 		/* 4. Top Half (y = 0): Static subway line identifier using 5x7 Font */
-		HUB75_DrawString5x7(0, 0, line_header, 255, 40, 0); // Iconic transit amber-orange
+		HUB75_DrawString3x5(0, 0, timBuf, 255, 255, 255); // Iconic transit amber-orange
 
 		/* 5. Bottom Half (y = 9): Smooth scrolling arrivals */
 		HUB75_ScrollString5x7(scroll_x, 9, arrival_times, 0, 240, 60); // Clean commuter green
