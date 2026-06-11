@@ -197,9 +197,9 @@ void StartDefaultTask(void *argument)
   xResult = xTaskCreate(vHeartbeatTask, "Heartbeat", 128, NULL, tskIDLE_PRIORITY, NULL);
   configASSERT(xResult == pdTRUE);
 
-//  /* 2. Launch your UI Task immediately so it starts animating right away */
-//  xResult = xTaskCreate(vLedMatrixTask, "MatrixUI", 512, NULL, 11, NULL);
-//  configASSERT(xResult == pdTRUE);
+  /* 2. Launch your UI Task immediately so it starts animating right away */
+  xResult = xTaskCreate(vLedMatrixTask, "MatrixUI", 512, NULL, 11, NULL);
+  configASSERT(xResult == pdTRUE);
 
   /* Keeps core networking engine active. This will handle initialization and connect to Wi-Fi */
   xResult = xTaskCreate(net_main, "MxNet", 1024, NULL, 23, NULL);

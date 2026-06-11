@@ -16,7 +16,8 @@
 #define HUB75_HALF_ROWS  (HUB75_ROWS / 2)
 #define HUB75_BCM_BITS   8
 
-#define BASE_PERIOD_TICKS 180 
+#define DMA_SAMPLES_PER_ROW    64
+#define BASE_PERIOD_TICKS      1250
 
 /* ─── Hardware Pin Routing Configuration ─────────────────────────────────── */
 #define HUB75_DATA_PORT         GPIOE
@@ -27,8 +28,10 @@
 #define HUB75_R2_PIN           GPIO_PIN_13
 #define HUB75_G2_PIN           GPIO_PIN_14
 #define HUB75_B2_PIN           GPIO_PIN_15
+#define HUB75_CLK_PIN          GPIO_PIN_4
 #define HUB75_DATA_MASK        (HUB75_R1_PIN | HUB75_G1_PIN | HUB75_B1_PIN | \
-                                HUB75_R2_PIN | HUB75_G2_PIN | HUB75_B2_PIN)
+                                HUB75_R2_PIN | HUB75_G2_PIN | HUB75_B2_PIN | \
+								HUB75_CLK_PIN)
 
 #define HUB75_ADDR_PORT        GPIOC
 #define HUB75_ADDR_CLK_ENABLE() __HAL_RCC_GPIOC_CLK_ENABLE()
@@ -41,8 +44,8 @@
 #define HUB75_CTRL_CLK_ENABLE() __HAL_RCC_GPIOD_CLK_ENABLE()
 #define HUB75_STB_PIN          GPIO_PIN_9
 #define HUB75_OE_PIN           GPIO_PIN_8
-#define HUB75_CLK_PIN          GPIO_PIN_15
-#define HUB75_CTRL_MASK        (HUB75_CLK_PIN | HUB75_OE_PIN | HUB75_STB_PIN)
+//#define HUB75_CLK_PIN          GPIO_PIN_15
+#define HUB75_CTRL_MASK        (HUB75_OE_PIN | HUB75_STB_PIN)// | HUB75_CLK_PIN )
 
 extern TIM_HandleTypeDef htim2;
 
