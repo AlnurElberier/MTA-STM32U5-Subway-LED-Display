@@ -8,14 +8,15 @@
 #include <stdint.h>
 #include "hub75.h"
 
-#define FONT_CHAR_W   5
-#define FONT_CHAR_H   7
-#define FONT_CELL_W   6
-#define FONT_CELL_H   8
-#define FONT_FIRST   0x20
-#define FONT_LAST    0x7E
+/* ─── Naming Convention Aligned with 3x5 ─────────────────────────────────── */
+#define FONT5X7_CHAR_W   5
+#define FONT5X7_CHAR_H   7
+#define FONT5X7_CELL_W   6
+#define FONT5X7_CELL_H   8
+#define FONT5X7_FIRST   0x20
+#define FONT5X7_LAST    0x7E
 
-/* Paste the original font5x7 matrix structure here exactly as provided originally */
+/* Font5x7 matrix structure lookup table */
 static const uint8_t font5x7[][5] = {
     { 0x00, 0x00, 0x00, 0x00, 0x00 }, /* 0x20 space */
     { 0x00, 0x00, 0x5F, 0x00, 0x00 }, /* 0x21 ! */
@@ -115,35 +116,23 @@ static const uint8_t font5x7[][5] = {
 };
 
 /* ─── 5x7 Character Rendering ────────────────────────────────────────────── */
-/**
- * @brief  Draws a single 5x7 character into the canvas back-buffer.
- * @param  x,y    The top-left pixel coordinates where the character cell starts.
- * @param  c      The ASCII character to draw (printable characters 0x20 to 0x7E).
- * @param  r,g,b  Color composition values (0–255).
- */
 static inline void HUB75_DrawChar5x7(int16_t x, int16_t y, char c,
                                    uint8_t r, uint8_t g, uint8_t b)
 {
-    /* Fallback protection: replace unprintable characters with a question mark */
-    if (c < FONT_FIRST || c > FONT_LAST) {
+    if (c < FONT5X7_FIRST || c > FONT5X7_LAST) {
         c = '?';
     }
 
-    /* Zero-index the ASCII value to look up its location in the local table */
-    const uint8_t *glyph = font5x7[(uint8_t)(c - FONT_FIRST)];
+    const uint8_t *glyph = font5x7[(uint8_t)(c - FONT5X7_FIRST)];
 
-    /* Iterate through the 5 columns of the glyph */
-    for (uint8_t col = 0; col < FONT_CHAR_W; col++) {
+    for (uint8_t col = 0; col < FONT5X7_CHAR_W; col++) {
         uint8_t col_data = glyph[col];
 
-        /* Iterate through the 7 vertical rows of the current column */
-        for (uint8_t row = 0; row < FONT_CHAR_H; row++) {
-            /* Check if the specific row bit is high */
+        for (uint8_t row = 0; row < FONT5X7_CHAR_H; row++) {
             if (col_data & (1u << row)) {
                 int16_t px = x + col;
                 int16_t py = y + row;
 
-                /* Bounds verification: drop individual pixels that fall outside the screen */
                 if (px >= 0 && px < HUB75_COLS && py >= 0 && py < HUB75_ROWS) {
                     HUB75_SetPixel((uint8_t)px, (uint8_t)py, r, g, b);
                 }
@@ -153,38 +142,60 @@ static inline void HUB75_DrawChar5x7(int16_t x, int16_t y, char c,
 }
 
 /* ─── 5x7 Standard Text Rendering ────────────────────────────────────────── */
-/**
- * @brief  Draws a static string into the canvas back-buffer using 5x7 metrics.
- * @param  x,y    The starting top-left coordinates of the first character cell.
- * @param  str    Null-terminated ASCII string.
- */
 static inline void HUB75_DrawString5x7(int16_t x, int16_t y, const char *str,
                                      uint8_t r, uint8_t g, uint8_t b)
 {
     while (*str) {
-        if (x >= HUB75_COLS) break; /* Performance break: stop if text passes right border */
+        if (x >= HUB75_COLS) break;
         HUB75_DrawChar5x7(x, y, *str, r, g, b);
-        x += FONT_CELL_W; /* Advance position by character width + 1px spacing */
+        x += FONT5X7_CELL_W;
         str++;
     }
 }
 
 /* ─── 5x7 Marquee Scrolling ──────────────────────────────────────────────── */
-/**
- * @brief  Draws a 5x7 string with a horizontal offset for smooth scroll animations.
- * @param  x_offset Current animation offset index (decremented per frame).
- */
 static inline void HUB75_ScrollString5x7(int16_t x_offset, int16_t y, const char *str,
                                        uint8_t r, uint8_t g, uint8_t b)
 {
     int16_t x = x_offset;
     while (*str) {
-        /* Pipelined bounding check: only draw if character is partially or fully visible */
-        if (x + FONT_CHAR_W > 0 && x < HUB75_COLS) {
+        if (x + FONT5X7_CHAR_W > 0 && x < HUB75_COLS) {
             HUB75_DrawChar5x7(x, y, *str, r, g, b);
         }
-        x += FONT_CELL_W;
+        x += FONT5X7_CELL_W;
         str++;
+    }
+}
+
+/* ─── 5x7 Vertical Scroll Rendering ─────────────────────────────────────── */
+static inline void HUB75_DrawVertScroll5x7(int16_t x,      int16_t y_base,
+                                            const char *str_top,
+                                            const char *str_next,
+                                            int8_t      y_offset,
+                                            uint8_t r, uint8_t g, uint8_t b)
+{
+    /* Top string sliding out — sits at y_base + y_offset */
+    int16_t y_top  = y_base + y_offset;
+
+    /* Next string sliding in from below — sits exactly one font character height + 1 space row below */
+    int16_t y_next = y_top + FONT5X7_CHAR_H + 1;
+
+    int16_t cx = x;
+    const char *s = str_top;
+    while (*s) {
+        if (cx >= HUB75_COLS) break;
+        HUB75_DrawChar5x7(cx, y_top, *s, r, g, b);
+        cx += FONT5X7_CELL_W;
+        s++;
+    }
+
+    cx = x;
+    s  = str_next;
+    while (*s) {
+        if (cx >= HUB75_COLS) break;
+        HUB75_DrawChar5x7(cx, y_next, *s, r, g, b);
+        cx += FONT5X7_CELL_W;
+        s++;
     }
 }
 #endif /* HUB75_FONT5X7_H */

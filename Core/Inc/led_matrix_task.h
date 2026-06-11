@@ -11,9 +11,9 @@
 #include "FreeRTOS.h"      // MUST be included before stream_buffer.h
 #include "stream_buffer.h"
 
-
-#define MAX_TRAIN_TIMES       5
-#define BUFFER_SIZE_BYTES     MAX_TRAIN_TIMES  // 5 bytes total
+#define TRAIN_COUNT			  2
+#define MAX_TRAIN_TIMES       3
+#define BUFFER_SIZE_BYTES     MAX_TRAIN_TIMES * TRAIN_COUNT  // 5 bytes total
 #define TRIGGER_LEVEL_BYTES   1                // Wake up reading task as soon as 1 byte arrives
 
 

@@ -21,7 +21,6 @@
 /* LED Matrix Shared Buffer */
 #include "led_matrix_task.h"
 
-/* Explicitly define missing mbedTLS network module error codes for custom profiles */
 #ifndef MBEDTLS_ERR_NET_SEND_FAILED
 #define MBEDTLS_ERR_NET_SEND_FAILED                      -0x004A
 #endif
@@ -32,11 +31,10 @@
 /* MTA API Configurations */
 #define MTA_HOST          "api-endpoint.mta.info"
 #define MTA_PORT          "443"
-#define MTA_URI           "/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace"
-#define MAX_ARRIVALS      32
+#define MAX_FEED_ARRIVALS 32
 #define HTTP_BUF_SIZE     (160 * 1024)
+#define STREAM_BUF_BYTES  6
 
-/* Network context wrapper structure to minimize function parameters */
 typedef struct {
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config conf;
@@ -45,17 +43,17 @@ typedef struct {
     int socket_fd;
 } MtaNetContext_t;
 
-/* Global static storage array for matched transit timestamps */
-static uint32_t gulArrivalTimestamps[MAX_ARRIVALS];
-static int giArrivalCount = 0;
+/* UPDATED: Independent tracking arrays for positional routing */
+static uint32_t gulCArrivals[MAX_FEED_ARRIVALS];
+static int giCCount = 0;
+
+static uint32_t gulGArrivals[MAX_FEED_ARRIVALS];
+static int giGCount = 0;
 
 /* =====================================================================
  * PARSER LAYER: CORE EMBEDDED PROTOCOL BUFFER STREAM DECODERS
  * ===================================================================== */
 
-/**
- * @brief Decodes a standard Base-128 Varint safely from the stream.
- */
 static bool prvReadVarint(uint8_t **ppucPtr, uint8_t *pucEnd, uint32_t *pulValue)
 {
     uint32_t ulResult = 0;
@@ -71,14 +69,11 @@ static bool prvReadVarint(uint8_t **ppucPtr, uint8_t *pucEnd, uint32_t *pulValue
             return true;
         }
         iShift += 7;
-        if (iShift >= 32) return false; /* Overflow Protection */
+        if (iShift >= 32) return false;
     }
     return false;
 }
 
-/**
- * @brief Parses the TripDescriptor sub-message block to identify route_id.
- */
 static void prvParseTripDescriptor(uint8_t *pucData, uint32_t ulLen, char *pcRouteIdOut)
 {
     uint8_t *p = pucData;
@@ -92,7 +87,7 @@ static void prvParseTripDescriptor(uint8_t *pucData, uint32_t ulLen, char *pcRou
         if (ulWire == 2)
         {
             uint32_t ulLength; prvReadVarint(&p, end, &ulLength);
-            if (ulField == 5) /* route_id string identifier field */
+            if (ulField == 5)
             {
                 size_t xCopyLen = (ulLength < 7) ? ulLength : 7;
                 memcpy(pcRouteIdOut, p, xCopyLen);
@@ -110,9 +105,6 @@ static void prvParseTripDescriptor(uint8_t *pucData, uint32_t ulLen, char *pcRou
     }
 }
 
-/**
- * @brief Parses the StopTimeEvent (Arrival/Departure) sub-message for Unix Timestamps.
- */
 static void prvParseStopTimeEvent(uint8_t *pucData, uint32_t ulLen, uint32_t *pulTimeOut)
 {
     uint8_t *p = pucData;
@@ -123,7 +115,7 @@ static void prvParseStopTimeEvent(uint8_t *pucData, uint32_t ulLen, uint32_t *pu
         uint32_t ulField = ulTag >> 3;
         uint32_t ulWire = ulTag & 0x07;
 
-        if (ulField == 2 && ulWire == 0) /* time integer varint field */
+        if (ulField == 2 && ulWire == 0)
         {
             prvReadVarint(&p, end, pulTimeOut);
         }
@@ -138,9 +130,6 @@ static void prvParseStopTimeEvent(uint8_t *pucData, uint32_t ulLen, uint32_t *pu
     }
 }
 
-/**
- * @brief Parses StopTimeUpdate components to extract arrival times if stop matches.
- */
 static void prvParseStopTimeUpdate(uint8_t *pucData, uint32_t ulLen, uint32_t *pulTimeOut, bool *pfFoundStop)
 {
     uint8_t *p = pucData;
@@ -157,13 +146,13 @@ static void prvParseStopTimeUpdate(uint8_t *pucData, uint32_t ulLen, uint32_t *p
         if (ulWire == 2)
         {
             uint32_t ulLength; prvReadVarint(&p, end, &ulLength);
-            if (ulField == 4) /* stop_id text block descriptor */
+            if (ulField == 4)
             {
                 size_t xCopyLen = (ulLength < 7) ? ulLength : 7;
                 memcpy(cStopId, p, xCopyLen);
                 cStopId[xCopyLen] = '\0';
             }
-            else if (ulField == 2 || ulField == 3) /* arrival (2) or departure (3) object sub-blocks */
+            else if (ulField == 2 || ulField == 3)
             {
                 prvParseStopTimeEvent(p, ulLength, &ulTimestamp);
             }
@@ -178,17 +167,13 @@ static void prvParseStopTimeUpdate(uint8_t *pucData, uint32_t ulLen, uint32_t *p
         }
     }
 
-    /* Verify Target Station Filters */
-    if (strcmp(cStopId, "A44N") == 0 && ulTimestamp != 0)
+    if ((strcmp(cStopId, "A44N") == 0 || strcmp(cStopId, "G35N") == 0) && ulTimestamp != 0)
     {
         *pulTimeOut = ulTimestamp;
         *pfFoundStop = true;
     }
 }
 
-/**
- * @brief Processes individual TripUpdate wrappers to collect candidate timestamps.
- */
 static void prvParseTripUpdate(uint8_t *pucData, uint32_t ulLen)
 {
     uint8_t *p = pucData;
@@ -199,7 +184,6 @@ static void prvParseTripUpdate(uint8_t *pucData, uint32_t ulLen)
 
     while (p < end)
     {
-        /* Cooperative Yield: Prevent display starvation during large array steps */
         vTaskDelay(0);
 
         uint32_t ulTag; if (!prvReadVarint(&p, end, &ulTag)) break;
@@ -209,11 +193,11 @@ static void prvParseTripUpdate(uint8_t *pucData, uint32_t ulLen)
         if (ulWire == 2)
         {
             uint32_t ulLength; prvReadVarint(&p, end, &ulLength);
-            if (ulField == 1) /* TripDescriptor block */
+            if (ulField == 1)
             {
                 prvParseTripDescriptor(p, ulLength, cRouteId);
             }
-            else if (ulField == 2) /* StopTimeUpdate array item block */
+            else if (ulField == 2)
             {
                 uint32_t ulTimeVal = 0;
                 bool fMatched = false;
@@ -234,22 +218,29 @@ static void prvParseTripUpdate(uint8_t *pucData, uint32_t ulLen)
         }
     }
 
-    /* Sibling Promotion: If this specific trip is confirmed as the C Line, register the times */
+    /* UPDATED: Route arrivals to separate storage locations based on Route ID */
     if (strcmp(cRouteId, "C") == 0)
     {
         for (int i = 0; i < iLocalCount; i++)
         {
-            if (giArrivalCount < MAX_ARRIVALS)
+            if (giCCount < MAX_FEED_ARRIVALS)
             {
-                gulArrivalTimestamps[giArrivalCount++] = ulLocalArrivals[i];
+                gulCArrivals[giCCount++] = ulLocalArrivals[i];
+            }
+        }
+    }
+    else if (strcmp(cRouteId, "G") == 0)
+    {
+        for (int i = 0; i < iLocalCount; i++)
+        {
+            if (giGCount < MAX_FEED_ARRIVALS)
+            {
+                gulGArrivals[giGCount++] = ulLocalArrivals[i];
             }
         }
     }
 }
 
-/**
- * @brief Master decoding parser loop that sweeps through the payload buffer.
- */
 static uint32_t prvMtaDecodeProtobufFeed(uint8_t *pucBody, size_t xBodyLength)
 {
     uint32_t ulFeedTimestamp = 0;
@@ -258,7 +249,6 @@ static uint32_t prvMtaDecodeProtobufFeed(uint8_t *pucBody, size_t xBodyLength)
 
     while (p < end)
     {
-        /* Cooperative Yield: Keeps the LED Matrix tracking rows fluid during decompression */
         vTaskDelay(0);
 
         uint32_t ulTag; if (!prvReadVarint(&p, end, &ulTag)) break;
@@ -269,7 +259,7 @@ static uint32_t prvMtaDecodeProtobufFeed(uint8_t *pucBody, size_t xBodyLength)
         {
             uint32_t ulLength; prvReadVarint(&p, end, &ulLength);
 
-            if (ulField == 1) /* Parse FeedHeader */
+            if (ulField == 1)
             {
                 uint8_t *hp = p;
                 uint8_t *h_end = p + ulLength;
@@ -279,7 +269,7 @@ static uint32_t prvMtaDecodeProtobufFeed(uint8_t *pucBody, size_t xBodyLength)
                     uint32_t ulHField = ulHTag >> 3;
                     uint32_t ulHWire = ulHTag & 0x07;
 
-                    if (ulHField == 3 && ulHWire == 0) /* timestamp field */
+                    if (ulHField == 3 && ulHWire == 0)
                     {
                         prvReadVarint(&hp, h_end, &ulFeedTimestamp);
                     }
@@ -293,7 +283,7 @@ static uint32_t prvMtaDecodeProtobufFeed(uint8_t *pucBody, size_t xBodyLength)
                     }
                 }
             }
-            else if (ulField == 2) /* Parse FeedEntity array */
+            else if (ulField == 2)
             {
                 uint8_t *ep = p;
                 uint8_t *e_end = p + ulLength;
@@ -306,7 +296,7 @@ static uint32_t prvMtaDecodeProtobufFeed(uint8_t *pucBody, size_t xBodyLength)
                     if (ulEWire == 2)
                     {
                         uint32_t ulELength; prvReadVarint(&ep, e_end, &ulELength);
-                        if (ulEField == 3) /* TripUpdate block match */
+                        if (ulEField == 3)
                         {
                             prvParseTripUpdate(ep, ulELength);
                         }
@@ -361,9 +351,6 @@ static int lwip_mbedtls_recv(void *ctx, unsigned char *buf, size_t len)
     return (ret < 0) ? MBEDTLS_ERR_NET_RECV_FAILED : ret;
 }
 
-/**
- * @brief Establishes connection, configures SO_LINGER, and completes the TLS handshake.
- */
 static int prvMtaConnectSecureEndpoint(MtaNetContext_t *pxNet)
 {
     int ret;
@@ -405,11 +392,9 @@ static int prvMtaConnectSecureEndpoint(MtaNetContext_t *pxNet)
         return -1;
     }
 
-    /* SO_LINGER 0: Force instant socket deletion on close to clear out PBUF memory pools */
     struct linger xLingerOpt = { .l_onoff = 1, .l_linger = 0 };
     lwip_setsockopt(pxNet->socket_fd, SOL_SOCKET, SO_LINGER, &xLingerOpt, sizeof(xLingerOpt));
 
-    /* RCVTIMEO: Prevent tasks from blocking infinitely if the Wi-Fi link flakes */
     uint32_t ulTimeoutMs = 6000;
     lwip_setsockopt(pxNet->socket_fd, SOL_SOCKET, SO_RCVTIMEO, &ulTimeoutMs, sizeof(ulTimeoutMs));
 
@@ -434,10 +419,7 @@ static int prvMtaConnectSecureEndpoint(MtaNetContext_t *pxNet)
     return 0;
 }
 
-/**
- * @brief Handles the secure streaming read loop and separates HTTP header metadata.
- */
-static int prvMtaFetchPayload(mbedtls_ssl_context *psSsl, uint8_t *pucBuffer, size_t xBufSize, uint8_t **ppucBodyOut, size_t *pxBodyLenOut)
+static int prvMtaFetchPayload(mbedtls_ssl_context *psSsl, uint8_t *pucBuffer, size_t xBufSize, const char *pcUri, uint8_t **ppucBodyOut, size_t *pxBodyLenOut)
 {
     size_t xTotalReadBytes = 0;
     int iConsecutiveTimeouts = 0;
@@ -446,17 +428,15 @@ static int prvMtaFetchPayload(mbedtls_ssl_context *psSsl, uint8_t *pucBuffer, si
     uint8_t *pucBodyStart = NULL;
     int ret;
 
-    /* Assemble and transmit public plaintext GET string */
     int iTxLen = snprintf((char *)pucBuffer, xBufSize,
                           "GET %s HTTP/1.1\r\n"
                           "Host: %s\r\n"
                           "User-Agent: STM32U5\r\n"
                           "Accept: */*\r\n"
                           "Connection: close\r\n\r\n",
-                          MTA_URI, MTA_HOST);
+                          pcUri, MTA_HOST);
     mbedtls_ssl_write(psSsl, pucBuffer, iTxLen);
 
-    /* Ingress streaming engine */
     do {
         size_t xRemainingSpace = xBufSize - 1 - xTotalReadBytes;
         if (xRemainingSpace == 0) break;
@@ -476,7 +456,6 @@ static int prvMtaFetchPayload(mbedtls_ssl_context *psSsl, uint8_t *pucBuffer, si
                 {
                     xExpectedBodyLength = strtoul(pcContentLengthStr + 16, NULL, 10);
                     fParsedHeader = true;
-                    LogInfo("Found HTTP Content-Length: %d bytes", xExpectedBodyLength);
                 }
             }
 
@@ -491,16 +470,13 @@ static int prvMtaFetchPayload(mbedtls_ssl_context *psSsl, uint8_t *pucBuffer, si
                 if (pucBodyStart != NULL)
                 {
                     size_t xCurrentBodyBytes = xTotalReadBytes - (pucBodyStart - pucBuffer);
-                    if (xCurrentBodyBytes >= xExpectedBodyLength) break; /* Download complete! */
+                    if (xCurrentBodyBytes >= xExpectedBodyLength) break;
                 }
             }
         }
         else if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
         {
-            if (++iConsecutiveTimeouts >= 3) {
-                LogWarn("Data stream stalled. Processing partial payload of %d bytes.", xTotalReadBytes);
-                break;
-            }
+            if (++iConsecutiveTimeouts >= 3) break;
             vTaskDelay(pdMS_TO_TICKS(50));
         }
         else if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == 0)
@@ -509,7 +485,6 @@ static int prvMtaFetchPayload(mbedtls_ssl_context *psSsl, uint8_t *pucBuffer, si
         }
         else
         {
-            LogError("mbedTLS secure read error: %d", ret);
             return -1;
         }
     } while (xTotalReadBytes < xBufSize - 1);
@@ -526,9 +501,6 @@ static int prvMtaFetchPayload(mbedtls_ssl_context *psSsl, uint8_t *pucBuffer, si
     return 0;
 }
 
-/**
- * @brief Tears down secure context handles and closes the physical socket descriptor.
- */
 static void prvMtaDisconnectSecureEndpoint(MtaNetContext_t *pxNet)
 {
     if (pxNet->socket_fd >= 0)
@@ -544,77 +516,75 @@ static void prvMtaDisconnectSecureEndpoint(MtaNetContext_t *pxNet)
 }
 
 /* =====================================================================
- * POST-PROCESSING LAYER: CALCULATION PIPELINES & IPC DISPATCHERS
+ * POST-PROCESSING LAYER: POSITIONAL ALIGNMENT PIPELINE
  * ===================================================================== */
 
-/**
- * @brief Computes delta relative minutes and writes snapshots to the StreamBuffer.
- */
+/* UPDATED: Parses lines independently into fixed array positions */
 static void prvMtaPostProcessArrivals(uint32_t ulFeedTimestamp)
 {
-    if (giArrivalCount > 0)
+    uint8_t ucMinsToEnqueue[STREAM_BUF_BYTES];
+
+    /* Initialize entire structural frame to 0xFF (Empty/Inactive) */
+    memset(ucMinsToEnqueue, 0xFF, sizeof(ucMinsToEnqueue));
+
+    /* 1. Process C-Train Arrivals */
+    if (giCCount > 0)
     {
-        qsort(gulArrivalTimestamps, giArrivalCount, sizeof(uint32_t), prvCompareTimestamps);
+        qsort(gulCArrivals, giCCount, sizeof(uint32_t), prvCompareTimestamps);
+        uint32_t ulBaseTime = (ulFeedTimestamp != 0) ? ulFeedTimestamp : gulCArrivals[0] - 120;
 
-        if (ulFeedTimestamp == 0)
+        int iIdx = 0;
+        for (int i = 0; i < giCCount && iIdx < 3; i++)
         {
-            ulFeedTimestamp = gulArrivalTimestamps[0] - 120; /* Guestimate offset safety window */
-        }
-
-        uint8_t ucMinsToEnqueue[5];
-        int iEnqueueCount = 0;
-
-        LogInfo("===============================================================");
-        LogInfo("Upcoming C trains at Clinton-Washington Avs (Manhattan-bound):");
-        LogInfo("===============================================================");
-
-        for (int i = 0; i < giArrivalCount; i++)
-        {
-            int iMinsRemaining = ((int)gulArrivalTimestamps[i] - (int)ulFeedTimestamp) / 60;
-
+            int iMinsRemaining = ((int)gulCArrivals[i] - (int)ulBaseTime) / 60;
             if (iMinsRemaining >= 0)
             {
-                LogInfo("  In %2d min   [Timestamp: %lu]", iMinsRemaining, gulArrivalTimestamps[i]);
-
-                if (iEnqueueCount < 5)
-                {
-                    ucMinsToEnqueue[iEnqueueCount++] = (iMinsRemaining > 255) ? 255 : (uint8_t)iMinsRemaining;
-                }
-            }
-        }
-        LogInfo("===============================================================");
-
-        if (xMtaTimBuf != NULL)
-        {
-            xStreamBufferReset(xMtaTimBuf);
-            if (iEnqueueCount > 0)
-            {
-                xStreamBufferSend(xMtaTimBuf, (const void *)ucMinsToEnqueue, iEnqueueCount, 0);
+                /* 254 limit guarantees 0xFF is reserved exclusively for "No Train Available" */
+                ucMinsToEnqueue[iIdx++] = (iMinsRemaining > 254) ? 254 : (uint8_t)iMinsRemaining;
             }
         }
     }
-    else
+
+    /* 2. Process G-Train Arrivals */
+    if (giGCount > 0)
     {
-        LogWarn("Feed synchronization success. No Manhattan-bound C lines located.");
-        if (xMtaTimBuf != NULL) xStreamBufferReset(xMtaTimBuf);
+        qsort(gulGArrivals, giGCount, sizeof(uint32_t), prvCompareTimestamps);
+        uint32_t ulBaseTime = (ulFeedTimestamp != 0) ? ulFeedTimestamp : gulGArrivals[0] - 120;
+
+        int iIdx = 3; /* Start filling at index offset 3 */
+        for (int i = 0; i < giGCount && iIdx < 6; i++)
+        {
+            int iMinsRemaining = ((int)gulGArrivals[i] - (int)ulBaseTime) / 60;
+            if (iMinsRemaining >= 0)
+            {
+                ucMinsToEnqueue[iIdx++] = (iMinsRemaining > 254) ? 254 : (uint8_t)iMinsRemaining;
+            }
+        }
+    }
+
+    LogInfo("Positional Packet Out: C=[%d, %d, %d] | G=[%d, %d, %d]",
+            ucMinsToEnqueue[0], ucMinsToEnqueue[1], ucMinsToEnqueue[2],
+            ucMinsToEnqueue[3], ucMinsToEnqueue[4], ucMinsToEnqueue[5]);
+
+    if (xMtaTimBuf != NULL)
+    {
+        xStreamBufferReset(xMtaTimBuf);
+        xStreamBufferSend(xMtaTimBuf, (const void *)ucMinsToEnqueue, STREAM_BUF_BYTES, 0);
     }
 }
 
-/**
- * @brief Dispatch error sentinel token to prevent the display from showing frozen metrics.
- */
 static void prvMtaDispatchErrorToken(void)
 {
     if (xMtaTimBuf != NULL)
     {
         xStreamBufferReset(xMtaTimBuf);
-        uint8_t ucErrorToken = 0xFF;
-        xStreamBufferSend(xMtaTimBuf, &ucErrorToken, 1, 0);
+        uint8_t ucErrorTokens[STREAM_BUF_BYTES] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        xStreamBufferSend(xMtaTimBuf, ucErrorTokens, STREAM_BUF_BYTES, 0);
     }
 }
 
 /* =====================================================================
- * ORCHESTRATOR LAYER: THE MASTER FreeRTOS LOOP ENGINE
+ * ORCHESTRATOR LAYER: FreeRTOS LOOP ENGINE
  * ===================================================================== */
 
 void vMtaApiTask(void *pvParameters)
@@ -623,64 +593,72 @@ void vMtaApiTask(void *pvParameters)
     uint8_t *pucHttpBuf = NULL;
     (void)pvParameters;
 
+    const char *pcMtaUris[TRAIN_COUNT] = {
+        "/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace",
+        "/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g"
+    };
+    const size_t xNumFeeds = sizeof(pcMtaUris) / sizeof(pcMtaUris[0]);
+
     for (;;)
     {
         bool fNetworkError = false;
 
-        /* 1. Network hardware guard check */
         if (netif_default == NULL || !netif_is_up(netif_default) ||
             ip_addr_isany_val(*netif_ip_addr4(netif_default)))
         {
-            LogWarn("Network interface is offline. Postponing cycle.");
+            LogWarn("Network interface offline.");
             prvMtaDispatchErrorToken();
             vTaskDelay(pdMS_TO_TICKS(10000));
             continue;
         }
 
-        giArrivalCount = 0;
+        /* Clear line metrics array counters cleanly for the query interval */
+        giCCount = 0;
+        giGCount = 0;
+        uint32_t ulLatestFeedTimestamp = 0;
 
-        /* 2. FreeRTOS Heap allocation */
         pucHttpBuf = pvPortMalloc(HTTP_BUF_SIZE);
         if (!pucHttpBuf)
         {
-            LogError("RAM allocation failed. Postponing cycle.");
             vTaskDelay(pdMS_TO_TICKS(10000));
             continue;
         }
 
-        /* 3. Secure Handshake Connection Execution */
-        if (prvMtaConnectSecureEndpoint(&xNetCtx) != 0)
+        for (size_t i = 0; i < xNumFeeds; i++)
         {
-            LogError("Secure endpoint connection failed.");
-            fNetworkError = true;
-            goto loop_cleanup;
+            if (prvMtaConnectSecureEndpoint(&xNetCtx) != 0)
+            {
+                fNetworkError = true;
+                prvMtaDisconnectSecureEndpoint(&xNetCtx);
+                break;
+            }
+
+            uint8_t *pucBody = NULL;
+            size_t xBodyLength = 0;
+            if (prvMtaFetchPayload(&xNetCtx.ssl, pucHttpBuf, HTTP_BUF_SIZE, pcMtaUris[i], &pucBody, &xBodyLength) != 0)
+            {
+                fNetworkError = true;
+                prvMtaDisconnectSecureEndpoint(&xNetCtx);
+                break;
+            }
+
+            uint32_t ulFeedTimestamp = prvMtaDecodeProtobufFeed(pucBody, xBodyLength);
+            if (ulFeedTimestamp > ulLatestFeedTimestamp)
+            {
+                ulLatestFeedTimestamp = ulFeedTimestamp;
+            }
+
+            prvMtaDisconnectSecureEndpoint(&xNetCtx);
         }
 
-        /* 4. Stream extraction parsing */
-        uint8_t *pucBody = NULL;
-        size_t xBodyLength = 0;
-        if (prvMtaFetchPayload(&xNetCtx.ssl, pucHttpBuf, HTTP_BUF_SIZE, &pucBody, &xBodyLength) != 0)
+        if (!fNetworkError)
         {
-            LogError("Payload retrieval failed.");
-            fNetworkError = true;
-            goto loop_cleanup;
+            prvMtaPostProcessArrivals(ulLatestFeedTimestamp);
         }
-
-        /* 5. Zero-Copy Protobuf Data Parse */
-        uint32_t ulFeedTimestamp = prvMtaDecodeProtobufFeed(pucBody, xBodyLength);
-
-        /* 6. Post-Process Chronology Sorting & IPC Dispatch */
-        prvMtaPostProcessArrivals(ulFeedTimestamp);
-
-loop_cleanup:
-
-        if (fNetworkError)
+        else
         {
             prvMtaDispatchErrorToken();
         }
-
-        /* 7. Drop socket tracking blocks instantly */
-        prvMtaDisconnectSecureEndpoint(&xNetCtx);
 
         if (pucHttpBuf)
         {
@@ -688,7 +666,6 @@ loop_cleanup:
             pucHttpBuf = NULL;
         }
 
-        /* 8. Wait 10 seconds before downloading the next live snapshot */
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        vTaskDelay(pdMS_TO_TICKS(20000));
     }
 }
