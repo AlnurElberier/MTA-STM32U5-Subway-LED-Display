@@ -4,6 +4,8 @@
 
 Firmware for an STM32U585-based embedded display system that integrates FreeRTOS, a HUB75 LED matrix, MXCHIP Wi-Fi networking, lwIP, mbedTLS, and a custom MTA GTFS-Realtime protobuf client. The project initializes MCU peripherals, manages Wi-Fi connectivity and SNTP time sync, fetches encrypted MTA route updates, decodes rail arrival data, and renders a real-time C/G train board on a 32x16 LED panel.
 
+![MTA Display Animation](assets/Mta.gif)
+
 ## System Architecture
 
 - `Core/Src/main.c` initializes HAL, clocks, peripherals, and starts the CMSIS-RTOS scheduler.
@@ -36,6 +38,210 @@ Firmware for an STM32U585-based embedded display system that integrates FreeRTOS
 - Display pipeline: `vLedMatrixTask` reads the 6-byte stream buffer, maintains separate C/G vertical scrollers, and renders the RTC header plus two train columns to the HUB75 panel at ~20 FPS.
 - Logging: asynchronous log producer functions enqueue messages to `xLogMBuf`; `vLoggingConsumerTask` flushes them to UART.
 
+### Software Task Connectivity Stack
+
+```mermaid
+graph TB
+    subgraph FreeRTOS["FreeRTOS Scheduler"]
+        HB["vHeartbeatTask"]
+        LED["vLedMatrixTask"]
+        NET["net_main<br/>Wi-Fi & lwIP"]
+        LOG["vLoggingConsumerTask"]
+        MTA["vMtaApiTask"]
+    end
+
+    subgraph Events["Event Synchronization"]
+        EVT_NET["EVT_MASK_NET_CONNECTED"]
+        EVT_TIME["EVT_MASK_TIME_SYNCED"]
+    end
+
+    subgraph Buffers["Stream Buffers"]
+        MTABuf["xMtaTimBuf<br/>6-byte train times"]
+        LogBuf["xLogMBuf<br/>Log messages"]
+    end
+
+    subgraph Network["Network Stack"]
+        MXCHIP["MXCHIP EMW3080<br/>SPI2 Interface"]
+        LWIP["lwIP TCP/IP Stack"]
+        DHCP["DHCP Client"]
+        SNTP["SNTP Client<br/>→ RTC"]
+    end
+
+    subgraph External["External Services"]
+        MTA_API["MTA API Endpoints<br/>GTFS-Realtime"]
+        NTP["Google NTP<br/>216.239.35.0:123"]
+        RTC["Hardware RTC<br/>LSE 32.768 kHz"]
+    end
+
+    subgraph Hardware["Hardware Peripherals"]
+        HUB75["HUB75 LED Panel<br/>Port E/C/D GPIOs"]
+        UART["USART1 PA9/PA10<br/>115200 baud"]
+    end
+
+    LED -->|reads| MTABuf
+    MTA -->|writes| MTABuf
+    MTA -->|writes| LogBuf
+    LOG -->|reads| LogBuf
+    
+    NET -->|triggers| EVT_NET
+    SNTP -->|triggers| EVT_TIME
+    
+    MTA -->|waits for| EVT_NET
+    MTA -->|waits for| EVT_TIME
+    LED -->|waits for| EVT_NET
+    
+    NET --> MXCHIP
+    MXCHIP --> LWIP
+    LWIP --> DHCP
+    LWIP --> SNTP
+    
+    SNTP --> NTP
+    SNTP --> RTC
+    
+    MTA --> LWIP
+    MTA --> MTA_API
+    
+    LED --> HUB75
+    LOG --> UART
+```
+
+### Hardware Peripheral Layout
+
+```mermaid
+graph LR
+    subgraph STM32["STM32U585 MCU<br/>160 MHz"]
+        CPU["ARM M33<br/>Cortex"]
+        GPIOE["GPIO Port E<br/>Data Lines"]
+        GPIOC["GPIO Port C<br/>Address"]
+        GPIOD["GPIO Port D<br/>Control"]
+        GPIOA["GPIO Port A"]
+        RTC_HW["RTC<br/>LSE 32.768kHz"]
+        RNG_HW["RNG<br/>Entropy"]
+        TIM2["TIM2 Timer<br/>1250-tick ISR"]
+        SPI2["SPI2<br/>DMA Ch4/5"]
+        USART["USART1<br/>115200 baud"]
+    end
+
+    subgraph MXCHIP_Module["MXCHIP EMW3080<br/>Wi-Fi Module"]
+        MXCHIP_SPI["SPI Interface"]
+        MXCHIP_GPIO["GPIO Ctrl<br/>NSS/RESET/<br/>FLOW/NOTIFY"]
+    end
+
+    subgraph HUB75_Panel["HUB75 32x16<br/>LED Matrix"]
+        DATA["Data: R1/G1/B1/<br/>R2/G2/B2"]
+        ADDR["Address: A/B/C"]
+        CTRL["Control: OE/STB"]
+    end
+
+    subgraph Debug["Debug & Power"]
+        ST_LINK["ST-LINK VCP"]
+        USB["USB Power"]
+    end
+
+    CPU -->|controls| GPIOE
+    CPU -->|controls| GPIOC
+    CPU -->|controls| GPIOD
+    CPU -->|reads| RTC_HW
+    CPU -->|feeds| RNG_HW
+    CPU -->|triggers ISR| TIM2
+    CPU -->|DMA xfer| SPI2
+    CPU -->|printf output| USART
+
+    GPIOE -->|PE0/7/12/14/15| DATA
+    GPIOE -->|PE4| DATA
+    GPIOC -->|PC0/2/4| ADDR
+    GPIOD -->|PD8/9| CTRL
+    GPIOD -->|PD1/3/4| SPI2
+
+    SPI2 -->|DMA| MXCHIP_SPI
+    GPIOA -->|PA4/PA5/PA6| MXCHIP_GPIO
+    MXCHIP_GPIO -->|status| MXCHIP_Module
+
+    DATA -->|parallel RGB| HUB75_Panel
+    ADDR -->|row select| HUB75_Panel
+    CTRL -->|timing| HUB75_Panel
+
+    USART -->|PA9/PA10| ST_LINK
+    USB -->|power| STM32
+```
+
+### Software Stack Layers
+
+```mermaid
+graph TB
+    subgraph App["Application Layer"]
+        MTA_Task["MTA API Client<br/>GTFS-Realtime Parser"]
+        LED_Task["LED Matrix Display<br/>Text Rendering"]
+        NET_Task["Network Management<br/>Wi-Fi State Machine"]
+    end
+
+    subgraph TLS["Security Layer"]
+        MBEDTLS["mbedTLS<br/>TLS/SSL Client<br/>Crypto, X.509"]
+    end
+
+    subgraph IP["Network Stack"]
+        LWIP["lwIP TCP/IP Stack<br/>Socket API, DHCP, SNTP<br/>DNS, ARP, IPv4"]
+    end
+
+    subgraph RADIO["Radio Driver Layer"]
+        MXCHIP_DRV["MXCHIP Driver<br/>SPI Dataplane,<br/>Control Plane,<br/>802.11 MAC"]
+        HUB75_DRV["HUB75 LED Driver<br/>Bitplane Generation,<br/>GPIO Control"]
+    end
+
+    subgraph HAL["Hardware Abstraction Layer"]
+        SPI_HAL["SPI2 + DMA<br/>HAL"]
+        GPIO_HAL["GPIO Port<br/>A/C/D/E HAL"]
+        TIM_HAL["TIM2 ISR<br/>HAL"]
+        RTC_HAL["RTC / SNTP<br/>HAL"]
+        RNG_HAL["RNG / Entropy<br/>HAL"]
+        UART_HAL["USART1<br/>HAL"]
+    end
+
+    subgraph RTOS["FreeRTOS / RTOS Kernel"]
+        KERNEL["Task Scheduler<br/>Event Groups<br/>Stream Buffers<br/>Mutexes"]
+    end
+
+    subgraph HW["Hardware / Physical Layer"]
+        MCU["STM32U585 @ 160 MHz<br/>Arm Cortex-M33"]
+        MXCHIP_HW["MXCHIP EMW3080<br/>Wi-Fi Transceiver"]
+        HUB75_HW["HUB75 LED Panel<br/>32×16 RGB Matrix"]
+        PERIPH["RTC, RNG, SPI2,<br/>GPIO, TIM2, USART1"]
+    end
+
+    MTA_Task -->|socket API| LWIP
+    LED_Task -->|framebuffer| HUB75_DRV
+    NET_Task -->|link status| MXCHIP_DRV
+    
+    LWIP -->|TLS context| MBEDTLS
+    MBEDTLS -->|entropy| RNG_HAL
+    
+    LWIP -->|send/recv| MXCHIP_DRV
+    MXCHIP_DRV -->|SPI xfer| SPI_HAL
+    MXCHIP_DRV -->|GPIO ctrl| GPIO_HAL
+    
+    HUB75_DRV -->|GPIO output| GPIO_HAL
+    HUB75_DRV -->|timer sync| TIM_HAL
+    
+    LWIP -->|time query| RTC_HAL
+    
+    SPI_HAL -->|HW control| MCU
+    GPIO_HAL -->|HW control| MCU
+    TIM_HAL -->|HW control| MCU
+    RTC_HAL -->|HW control| MCU
+    RNG_HAL -->|HW control| MCU
+    UART_HAL -->|HW control| MCU
+    
+    MCU -->|SPI| MXCHIP_HW
+    MCU -->|GPIO| HUB75_HW
+    MCU -->|Periph| PERIPH
+    
+    LWIP -.->|runs on| KERNEL
+    MBEDTLS -.->|runs on| KERNEL
+    MTA_Task -.->|scheduled by| KERNEL
+    LED_Task -.->|scheduled by| KERNEL
+    NET_Task -.->|scheduled by| KERNEL
+```
+
 ## Hardware / Software Stack
 
 - MCU: STM32U585 family.
@@ -59,6 +265,41 @@ Firmware for an STM32U585-based embedded display system that integrates FreeRTOS
 - `TIM2` is started in `HUB75_Init()` and its overflow callback in `Core/Src/tim.c` calls `HUB75_ISR()`.
 - `HUB75_ISR()` blanks the panel, latches the row, updates the address multiplex lines, and steps through the BCM bitplane timing by updating `htim2.Instance->ARR`.
 - `HUB75_SwapBuffers()` pre-encodes the active/clock phases into a double-buffered stream before the ISR consumes it.
+
+#### HUB75 Pinout for STM32U5 Discovery Kit (B-U585I-IOT02A)
+
+![HUB75 Connector Layout](assets/led_matrix_socket2.png)
+
+**Data Lines (Port E – Arduino Header CN14 & STMOD CN4):**
+| Signal | Pin    | Arduino Header | Notes                                                    |
+|--------|--------|----------------|----------------------------------------------------------|
+| R1     | PE0    | D1             | Data line for red color (upper half)                    |
+| G1     | PE7    | A4             | Data line for green color (upper half)                  |
+| B1     | PE12   | D9             | Data line for blue color (upper half)                   |
+| R2     | PE13   | D11            | Data line for red color (lower half)                    |
+| G2     | PE14   | D12            | Data line for green color (lower half)                  |
+| B2     | PE15   | D13            | Data line for blue color (lower half)                   |
+| CLK    | PE4    | STMOD CN4      | **Moved to STMOD CN4 to keep on same GPIO port as data** |
+
+**Address Lines (Port C – Arduino Header CN14):**
+| Signal | Pin    | Arduino Header | Multiplexer |
+|--------|--------|----------------|-------------|
+| A      | PC0    | A5             | Row 0/8     |
+| B      | PC2    | A6             | Row 1/9     |
+| C      | PC4    | A7             | Row 2/10    |
+
+**Control Lines (Port D – Arduino Header CN14):**
+| Signal | Pin    | Arduino Header | Purpose                          |
+|--------|--------|----------------|----------------------------------|
+| OE     | PD8    | D10            | Output Enable (active low)       |
+| STB    | PD9    | D15            | Strobe/Latch (active high)       |
+
+**Configuration Notes:**
+- All data lines (R1, G1, B1, R2, G2, B2) are on **Port E** for unified, single-port control and clock interleaving optimization.
+- The clock line was moved from Port D to **PE4 on STMOD CN4** to keep all data signals on the same GPIO port, enabling efficient synchronized output and reducing critical path delays.
+- Address lines are multiplexed across **Port C** for row selection (3 bits = 8 rows, scanned as upper and lower halves).
+- Control lines use **Port D** for output enable and strobe/latch operations.
+- All GPIO pins are configured for push-pull output at maximum speed (GPIO_SPEED_FREQ_VERY_HIGH) to meet HUB75 timing requirements.
 
 ### Wi-Fi stack: MXCHIP over SPI + lwIP
 
