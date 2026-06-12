@@ -6,17 +6,29 @@ Firmware for an STM32U585-based embedded display system that integrates FreeRTOS
 
 ![MTA Display Animation](assets/Mta.gif)
 
-## System Architecture
+## System Overview
 
-- `Core/Src/main.c` initializes HAL, clocks, peripherals, and starts the CMSIS-RTOS scheduler.
-- `Core/Src/app_freertos.c` creates the runtime task topology, including heartbeat, LED matrix UI, network engine, logging consumer, and MTA API client.
-- `Common/net/mxchip/mx_netconn.c` implements the MXCHIP Wi-Fi control plane, lwIP interface registration, DHCP, and network state event handling.
-- `Core/Src/mta_task.c` contains the MTA API client, TLS connection logic, HTTP request/response handling, and custom protobuf parsing for C/G train updates.
-- `Core/Src/led_matrix_task.c` renders the current time and positional train arrival minutes to the HUB75 LED panel.
-- `Common/hub75/` contains the display abstraction, pixel framebuffer, bitplane DMA generation, and text/scroll rendering macros.
-- `Core/Src/logging.c` provides FreeRTOS-safe message buffering and UART log output.
+A compact STM32U585 project that uses MXCHIP Wi-Fi, lwIP, mbedTLS, FreeRTOS, and a HUB75 32×16 panel to display live MTA arrival times.
 
-## Core Components / Modules
+### What it does
+
+- Fetches secure GTFS-Realtime feeds
+- Parses route and stop data
+- Drives HUB75 refresh timing
+- Keeps RTC time synced via SNTP
+- Logs status to USART
+
+## Hardware / Software Stack
+
+- MCU: STM32U585 family.
+- Board: B-U585I-IOT02A (STM32U5 Discovery kit) via CubeMX-generated project config.
+- RTOS: FreeRTOS.
+- Networking: lwIP stack, MXCHIP SPI/GPIO Wi-Fi module driver, DHCP, SNTP.
+- Security: mbedTLS TLS client for HTTPS over lwIP.
+- Display: HUB75 32x16 RGB LED panel driver with platform-specific pin mapping.
+- Peripherals: SPI2, USART1, RTC, RNG, TIM2, GPIO, ICACHE, DCACHE, GPDMA.
+
+## Core Components
 
 - `main.c`: HAL/clock/power initialization and RTOS startup.
 - `app_freertos.c`: RTOS task creation, event synchronization, SNTP initialization, and launch order.
@@ -27,18 +39,8 @@ Firmware for an STM32U585-based embedded display system that integrates FreeRTOS
 - `logging.c`: early and runtime logging paths, ISR-safe message buffering, UART transmission.
 - `sntp_sync.c`: SNTP-to-hardware RTC update and event notification.
 
-## Data Flow / Control Flow
 
-- Startup: `main()` configures MCU peripherals then initializes FreeRTOS.
-- Task orchestration: `app_freertos.c` launches heartbeat, `vLedMatrixTask`, `net_main`, `vLoggingConsumerTask`, and after network/time ready, `vMtaApiTask`.
-- Network initialization: `net_main()` initializes lwIP, starts MXCHIP dataplane and control plane tasks, and registers the netif.
-- Wi-Fi control: `mx_netconn.c` manages MXCHIP SPI/GPIO handshake, monitors module status notifications, and drives DHCP/IP acquisition.
-- Time sync: once network connectivity is established, SNTP is configured and `EVT_MASK_TIME_SYNCED` is awaited before starting the MTA client.
-- MTA feed pipeline: `vMtaApiTask` fetches two hard-coded GTFS-Realtime feed URIs, parses protobuf payloads, extracts stop arrival events for targeted route IDs, sorts arrival timestamps, computes minutes-to-arrival, and writes a 6-byte positional packet into `xMtaTimBuf`.
-- Display pipeline: `vLedMatrixTask` reads the 6-byte stream buffer, maintains separate C/G vertical scrollers, and renders the RTC header plus two train columns to the HUB75 panel at ~20 FPS.
-- Logging: asynchronous log producer functions enqueue messages to `xLogMBuf`; `vLoggingConsumerTask` flushes them to UART.
-
-### Software Task Connectivity Stack
+### Task connectivity
 
 ```mermaid
 graph TB
@@ -105,158 +107,6 @@ graph TB
     LOG --> UART
 ```
 
-### Hardware Peripheral Layout
-
-```mermaid
-graph LR
-    subgraph STM32["STM32U585 MCU<br/>160 MHz"]
-        CPU["ARM M33<br/>Cortex"]
-        GPIOE["GPIO Port E<br/>Data Lines"]
-        GPIOC["GPIO Port C<br/>Address"]
-        GPIOD["GPIO Port D<br/>Control"]
-        GPIOA["GPIO Port A"]
-        RTC_HW["RTC<br/>LSE 32.768kHz"]
-        RNG_HW["RNG<br/>Entropy"]
-        TIM2["TIM2 Timer<br/>1250-tick ISR"]
-        SPI2["SPI2<br/>DMA Ch4/5"]
-        USART["USART1<br/>115200 baud"]
-    end
-
-    subgraph MXCHIP_Module["MXCHIP EMW3080<br/>Wi-Fi Module"]
-        MXCHIP_SPI["SPI Interface"]
-        MXCHIP_GPIO["GPIO Ctrl<br/>NSS/RESET/<br/>FLOW/NOTIFY"]
-    end
-
-    subgraph HUB75_Panel["HUB75 32x16<br/>LED Matrix"]
-        DATA["Data: R1/G1/B1/<br/>R2/G2/B2"]
-        ADDR["Address: A/B/C"]
-        CTRL["Control: OE/STB"]
-    end
-
-    subgraph Debug["Debug & Power"]
-        ST_LINK["ST-LINK VCP"]
-        USB["USB Power"]
-    end
-
-    CPU -->|controls| GPIOE
-    CPU -->|controls| GPIOC
-    CPU -->|controls| GPIOD
-    CPU -->|reads| RTC_HW
-    CPU -->|feeds| RNG_HW
-    CPU -->|triggers ISR| TIM2
-    CPU -->|DMA xfer| SPI2
-    CPU -->|printf output| USART
-
-    GPIOE -->|PE0/7/12/14/15| DATA
-    GPIOE -->|PE4| DATA
-    GPIOC -->|PC0/2/4| ADDR
-    GPIOD -->|PD8/9| CTRL
-    GPIOD -->|PD1/3/4| SPI2
-
-    SPI2 -->|DMA| MXCHIP_SPI
-    GPIOA -->|PA4/PA5/PA6| MXCHIP_GPIO
-    MXCHIP_GPIO -->|status| MXCHIP_Module
-
-    DATA -->|parallel RGB| HUB75_Panel
-    ADDR -->|row select| HUB75_Panel
-    CTRL -->|timing| HUB75_Panel
-
-    USART -->|PA9/PA10| ST_LINK
-    USB -->|power| STM32
-```
-
-### Software Stack Layers
-
-```mermaid
-graph TB
-    subgraph App["Application Layer"]
-        MTA_Task["MTA API Client<br/>GTFS-Realtime Parser"]
-        LED_Task["LED Matrix Display<br/>Text Rendering"]
-        NET_Task["Network Management<br/>Wi-Fi State Machine"]
-    end
-
-    subgraph TLS["Security Layer"]
-        MBEDTLS["mbedTLS<br/>TLS/SSL Client<br/>Crypto, X.509"]
-    end
-
-    subgraph IP["Network Stack"]
-        LWIP["lwIP TCP/IP Stack<br/>Socket API, DHCP, SNTP<br/>DNS, ARP, IPv4"]
-    end
-
-    subgraph RADIO["Radio Driver Layer"]
-        MXCHIP_DRV["MXCHIP Driver<br/>SPI Dataplane,<br/>Control Plane,<br/>802.11 MAC"]
-        HUB75_DRV["HUB75 LED Driver<br/>Bitplane Generation,<br/>GPIO Control"]
-    end
-
-    subgraph HAL["Hardware Abstraction Layer"]
-        SPI_HAL["SPI2 + DMA<br/>HAL"]
-        GPIO_HAL["GPIO Port<br/>A/C/D/E HAL"]
-        TIM_HAL["TIM2 ISR<br/>HAL"]
-        RTC_HAL["RTC / SNTP<br/>HAL"]
-        RNG_HAL["RNG / Entropy<br/>HAL"]
-        UART_HAL["USART1<br/>HAL"]
-    end
-
-    subgraph RTOS["FreeRTOS / RTOS Kernel"]
-        KERNEL["Task Scheduler<br/>Event Groups<br/>Stream Buffers<br/>Mutexes"]
-    end
-
-    subgraph HW["Hardware / Physical Layer"]
-        MCU["STM32U585 @ 160 MHz<br/>Arm Cortex-M33"]
-        MXCHIP_HW["MXCHIP EMW3080<br/>Wi-Fi Transceiver"]
-        HUB75_HW["HUB75 LED Panel<br/>32×16 RGB Matrix"]
-        PERIPH["RTC, RNG, SPI2,<br/>GPIO, TIM2, USART1"]
-    end
-
-    MTA_Task -->|socket API| LWIP
-    LED_Task -->|framebuffer| HUB75_DRV
-    NET_Task -->|link status| MXCHIP_DRV
-    
-    LWIP -->|TLS context| MBEDTLS
-    MBEDTLS -->|entropy| RNG_HAL
-    
-    LWIP -->|send/recv| MXCHIP_DRV
-    MXCHIP_DRV -->|SPI xfer| SPI_HAL
-    MXCHIP_DRV -->|GPIO ctrl| GPIO_HAL
-    
-    HUB75_DRV -->|GPIO output| GPIO_HAL
-    HUB75_DRV -->|timer sync| TIM_HAL
-    
-    LWIP -->|time query| RTC_HAL
-    
-    SPI_HAL -->|HW control| MCU
-    GPIO_HAL -->|HW control| MCU
-    TIM_HAL -->|HW control| MCU
-    RTC_HAL -->|HW control| MCU
-    RNG_HAL -->|HW control| MCU
-    UART_HAL -->|HW control| MCU
-    
-    MCU -->|SPI| MXCHIP_HW
-    MCU -->|GPIO| HUB75_HW
-    MCU -->|Periph| PERIPH
-    
-    LWIP -.->|runs on| KERNEL
-    MBEDTLS -.->|runs on| KERNEL
-    MTA_Task -.->|scheduled by| KERNEL
-    LED_Task -.->|scheduled by| KERNEL
-    NET_Task -.->|scheduled by| KERNEL
-```
-
-## Hardware / Software Stack
-
-- MCU: STM32U585 family.
-- Board: B-U585I-IOT02A (STM32U5 Discovery kit) via CubeMX-generated project config.
-- RTOS: FreeRTOS with CMSIS-RTOS V2 wrapper.
-- Networking: lwIP stack, MXCHIP SPI/GPIO Wi-Fi module driver, DHCP, SNTP.
-- Security: mbedTLS TLS client for HTTPS over lwIP.
-- Display: HUB75 32x16 RGB LED panel driver with platform-specific pin mapping.
-- Peripherals: SPI2, USART1, RTC, RNG, TIM2, GPIO, ICACHE, DCACHE, GPDMA.
-- Build: GNU Arm Embedded Toolchain (`arm-none-eabi-gcc`).
-- Debug / console: `USART1` on PA9/PA10 routed to ST-LINK VCP and `Middlewares/ST/STDIO/stdout_usart.c` retargets `printf`/`fputc` to UART.
-- RNG: hardware RNG provides entropy to mbedTLS through `Core/Src/crypto/rng_alt_stm32.c`.
-- Display refresh: `TIM2` drives `HUB75_ISR()` at a 1250-tick base period, giving bitplane timed PWM and row multiplexing.
-
-## Physical Interface and Connectivity Stack
 
 ### LED matrix timing and HUB75
 
@@ -297,45 +147,6 @@ graph TB
 **Configuration Notes:**
 - All data lines (R1, G1, B1, R2, G2, B2) are on **Port E** for unified, single-port control and clock interleaving optimization.
 - The clock line was moved from Port D to **PE4 on STMOD CN4** to keep all data signals on the same GPIO port, enabling efficient synchronized output and reducing critical path delays.
-- Address lines are multiplexed across **Port C** for row selection (3 bits = 8 rows, scanned as upper and lower halves).
-- Control lines use **Port D** for output enable and strobe/latch operations.
-- All GPIO pins are configured for push-pull output at maximum speed (GPIO_SPEED_FREQ_VERY_HIGH) to meet HUB75 timing requirements.
-
-### Wi-Fi stack: MXCHIP over SPI + lwIP
-
-- The MXCHIP EMW3080 Wi-Fi module is connected over `SPI2` using the HAL SPI interface on PD1/PD3/PD4.
-- `Core/Src/spi.c` configures `SPI2` with DMA for both TX and RX and links GPDMA1 channels 4/5.
-- GPIO mappings in `Core/Inc/main.h` and `Common/net/mxchip/mx_gpio.c` define `MXCHIP_NSS`, `MXCHIP_RESET`, `MXCHIP_FLOW`, and `MXCHIP_NOTIFY`.
-- `Common/net/mxchip/mx_dataplane.c` uses `HAL_SPI_TransmitReceive_DMA()` for all module transfers and waits for DMA completion via FreeRTOS task notifications.
-- The module notify/flow callbacks wake the dataplane task when new data is ready or when the module can accept more traffic.
-- `Common/net/mxchip/mx_lwip.c` registers the lwIP `netif` and implements `linkoutput` and packet receive hooks, packaging Ethernet frames with the MXCHIP bypass header and routing them to lwIP.
-
-### TLS / mbedTLS / FreeRTOS coordination
-
-- The TLS client uses lwIP socket APIs wrapped by `Common/config/tls_transport_lwip.h` and `Common/include/mbedtls_transport.h` so mbedTLS operates on the embedded IP stack.
-- `Core/Src/mta_task.c` allocates `mbedtls_ssl_context`, `mbedtls_ctr_drbg_context`, `mbedtls_entropy_context`, and establishes an HTTPS session to `api-endpoint.mta.info` port `443`.
-- `Common/sys/mbedtls_freertos_port.c` provides heap allocation and threading primitives for mbedTLS using FreeRTOS memory and mutex wrappers.
-- `Core/Src/crypto/rng_alt_stm32.c` implements `mbedtls_hardware_poll()` using the STM32 RNG peripheral and IRQ-driven completion to supply entropy to the TLS stack.
-
-### RTC / SNTP time synchronization
-
-- The RTC is initialized in `Core/Src/rtc.c` using `LSE` as the clock source.
-- After the network is up, `app_freertos.c` configures SNTP to Google Anycast NTP server `216.239.35.0` and starts `sntp_init()` under the lwIP core lock.
-- `sntp_sync.c` receives epoch seconds, applies a fixed UTC-4 offset, converts to `struct tm`, and writes the time and date into the STM32 hardware RTC.
-- The display task reads the RTC through `HAL_RTC_GetTime()` and `HAL_RTC_GetDate()` to show the current header timestamp on the LED panel.
-
-### USART and debug output
-
-- `Core/Src/usart.c` initializes `USART1` on PA9/PA10 at 115200 baud, no parity, 8N1.
-- `Middlewares/ST/STDIO/stdout_usart.c` hooks `_write()` to `HAL_UART_Transmit()` so `printf()` and logging output are visible over ST-LINK VCP.
-- The logger is initialized early in `app_freertos.c` so runtime status, network events, SNTP sync, and MTA feed parsing are emitted to the console.
-
-## CubeMX / STM32CubeIDE Integration
-
-- This repository includes the STM32CubeMX project config file `mtaTimes.ioc` at the project root.
-- Open `mtaTimes.ioc` in STM32CubeMX or STM32CubeIDE to inspect the B-U585I-IOT02A pin/peripheral configuration and regenerate code if pins are changed.
-- The project config sets up SPI2, USART1, RTC, RNG, TIM2, and GPIOs used by MXCHIP and the HUB75 panel.
-- For CubeIDE debugging, import/open `mtaTimes.ioc`, build the generated project, and use the ST-LINK debug configuration targeting `mtaTimes.elf`.
 
 ## Build and Setup Instructions
 
@@ -377,44 +188,12 @@ graph TB
   - **Route IDs**: Hardcoded at lines ~222 and ~232 as `"C"` and `"G"`
     - To add/change routes, modify the MTA feed endpoints above and update the route comparisons in `prvParseTripUpdate()`
     - The display expects a 6-byte stream: 3 minutes for the first route, 3 minutes for the second route
- - Route and stop information can be found in the MTA [Developer Resourse Guide](https://www.mta.info/developers)
+    - Route and stop information can be found in the MTA [Developer Resource Guide](https://www.mta.info/developers)
 
 - The `led_matrix_task` expects a 6-byte stream buffer packet structured as three C-route minute values followed by three G-route values.
 - `Common/include/sys_evt.h` defines runtime event bits for network and time synchronization.
 - `Common/config/lwipopts.h` and `Common/net/lwip_port/include/lwipopts_freertos.h` configure lwIP behavior.
-- The HUB75 driver pin definitions are centralized in `Common/hub75/Inc/hub75.h`; changing to a different 16x32 display requires remapping these GPIO definitions to your physical wiring.
-
-## Key Design Decisions
-
-- Explicit RTOS task separation: UI, networking, logging, heartbeat, and MTA client run in dedicated FreeRTOS tasks.
-- Hardware abstraction for MXCHIP Wi-Fi is isolated in `Common/net/mxchip/` and decoupled from application logic.
-- Custom protobuf parsing in `mta_task.c` avoids generated protobuf libraries and extracts only targeted route/stop fields for C and G service.
-- The display subsystem uses a double-buffered bitplane strategy and DMA-based HUB75 rendering for efficient LED refresh.
-- Event groups synchronize critical startup phases: network readiness (`EVT_MASK_NET_CONNECTED`) and SNTP time sync (`EVT_MASK_TIME_SYNCED`).
-
-## Runtime / Execution Notes
-
-- On reset, the firmware boots peripherals, starts FreeRTOS, and first brings up the LED matrix and network engine.
-- The network task monitors MXCHIP status changes and brings up the lwIP interface.
-- After DHCP and SNTP sync, `vMtaApiTask` begins polling MTA endpoints every 20 seconds.
-- `vLedMatrixTask` continuously refreshes the display every 50 ms.
-- `Error_Handler()` disables interrupts and loops on fatal HAL failures.
-
-## Debugging / Testing Approach
-
-- Runtime diagnostics are output over `USART1` via `logging.c`.
-- `vApplicationMallocFailedHook`, `vApplicationStackOverflowHook`, and `vApplicationIdleHook` are implemented in `app_freertos.c`.
-- No unit-test harness or automated tests are present in the repository; debugging is expected via UART logs and hardware state.
-
-## Repository Structure Overview
-
-- `Core/Inc` and `Core/Src`: application firmware, RTOS init, HAL peripheral drivers, display task, MTA client, and system startup.
-- `Common/net/mxchip`: MXCHIP Wi-Fi driver, IPC, lwIP glue, and SPI/GPIO control.
-- `Common/hub75`: HUB75 LED matrix drivers and font rendering primitives.
-- `Common/sys`: FreeRTOS integration helpers, HAL init, interrupt handlers, and mbedTLS RTOS port.
-- `Middlewares/Third_Party`: bundled FreeRTOS, lwIP, ARM Security (mbedTLS/PSA), and STDIO support.
-- `Drivers/STM32U5xx_HAL_Driver`: STM32 HAL sources.
-- `STM32U585AIIXQ_FLASH.ld` / `STM32U585AIIXQ_RAM.ld`: linker scripts.
+- The HUB75 driver pin definitions are centralized in `Common/hub75/Inc/hub75.h`
 
 ## Future Improvements
 
