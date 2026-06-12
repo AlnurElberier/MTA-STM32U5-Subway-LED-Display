@@ -1,0 +1,22 @@
+# Build directories
+Debug/
+Release/
+**/Debug/
+**/Release/
+
+# Object/dependency files
+*.o
+*.d
+*.su
+*.cyclo
+
+# Output binaries
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+
+# CubeMX backups
+*.bak
+*.orig
