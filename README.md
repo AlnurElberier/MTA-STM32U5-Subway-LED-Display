@@ -1,4 +1,4 @@
-﻿# mxchipFreertos
+﻿# MTA STM32U5 MXCHIP Wi-Fi Subway LED Display
 
 ## Technical Summary
 
