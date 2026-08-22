@@ -26,7 +26,7 @@ A compact STM32U585 project that uses MXCHIP Wi-Fi, lwIP, mbedTLS, FreeRTOS, and
 - Networking: lwIP stack, MXCHIP SPI/GPIO Wi-Fi module driver, DHCP, SNTP.
 - Security: mbedTLS TLS client for HTTPS over lwIP.
 - Display: HUB75 32x16 RGB LED panel driver with platform-specific pin mapping.
-- Peripherals: SPI2, USART1, RTC, RNG, TIM2, GPIO, ICACHE, DCACHE, GPDMA, IDWG.
+- Peripherals: SPI2, USART1, RTC, RNG, TIM2, GPIO, ICACHE, DCACHE, GPDMA, IWDG.
 
 ## Core Components
 
