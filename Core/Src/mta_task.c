@@ -21,6 +21,9 @@
 /* LED Matrix Shared Buffer */
 #include "led_matrix_task.h"
 
+/* Watchdog */
+#include "iwdg.h"
+
 #ifndef MBEDTLS_ERR_NET_SEND_FAILED
 #define MBEDTLS_ERR_NET_SEND_FAILED                      -0x004A
 #endif
@@ -572,6 +575,7 @@ static void prvMtaPostProcessArrivals(uint32_t ulFeedTimestamp)
     {
         xStreamBufferReset(xMtaTimBuf);
         xStreamBufferSend(xMtaTimBuf, (const void *)ucMinsToEnqueue, STREAM_BUF_BYTES, 0);
+        HAL_IWDG_Refresh(&hiwdg);   /* kick here */
     }
 }
 
@@ -582,6 +586,7 @@ static void prvMtaDispatchErrorToken(void)
         xStreamBufferReset(xMtaTimBuf);
         uint8_t ucErrorTokens[STREAM_BUF_BYTES] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
         xStreamBufferSend(xMtaTimBuf, ucErrorTokens, STREAM_BUF_BYTES, 0);
+        HAL_IWDG_Refresh(&hiwdg);   /* kick here */
     }
 }
 
