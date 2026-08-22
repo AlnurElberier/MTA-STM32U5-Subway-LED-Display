@@ -402,6 +402,7 @@ static int prvMtaConnectSecureEndpoint(MtaNetContext_t *pxNet)
     {
         lwip_freeaddrinfo(res);
         lwip_close(pxNet->socket_fd);
+        pxNet->socket_fd = -1; /* FIX: prevent double-close in prvMtaDisconnectSecureEndpoint */
         return -1;
     }
     lwip_freeaddrinfo(res);
@@ -413,6 +414,7 @@ static int prvMtaConnectSecureEndpoint(MtaNetContext_t *pxNet)
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
         {
             lwip_close(pxNet->socket_fd);
+            pxNet->socket_fd = -1; /* FIX: prevent double-close in prvMtaDisconnectSecureEndpoint */
             return -1;
         }
     }
@@ -620,6 +622,10 @@ void vMtaApiTask(void *pvParameters)
         pucHttpBuf = pvPortMalloc(HTTP_BUF_SIZE);
         if (!pucHttpBuf)
         {
+            /* FIX: without this, a malloc failure silently leaves whatever was
+             * last written in xMtaTimBuf on screen forever, since this branch
+             * never touches the stream buffer again. */
+            prvMtaDispatchErrorToken();
             vTaskDelay(pdMS_TO_TICKS(10000));
             continue;
         }
