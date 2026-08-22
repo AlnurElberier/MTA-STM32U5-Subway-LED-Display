@@ -26,7 +26,7 @@ A compact STM32U585 project that uses MXCHIP Wi-Fi, lwIP, mbedTLS, FreeRTOS, and
 - Networking: lwIP stack, MXCHIP SPI/GPIO Wi-Fi module driver, DHCP, SNTP.
 - Security: mbedTLS TLS client for HTTPS over lwIP.
 - Display: HUB75 32x16 RGB LED panel driver with platform-specific pin mapping.
-- Peripherals: SPI2, USART1, RTC, RNG, TIM2, GPIO, ICACHE, DCACHE, GPDMA.
+- Peripherals: SPI2, USART1, RTC, RNG, TIM2, GPIO, ICACHE, DCACHE, GPDMA, IDWG.
 
 ## Core Components
 
@@ -201,7 +201,8 @@ graph TB
 - Credential management is currently hard-coded and should be moved to a secure configuration store.
 - Protobuf parsing is minimal and route/stop-specific; a generated schema parser could improve maintainability.
 - Hardware RTC offset handling is fixed to UTC-4 in `sntp_sync.c`; timezone support is not generalized.
-- Add a system watchdog and stale-data detection path so the LED board does not display expired arrival values.
+- ~~Add a system watchdog and stale-data detection path so the LED board does not display expired arrival values.~~
+    - completed 8/22
 - Add a configuration interface for route and stop selection, either via BLE or AT-style command handling, instead of hard-coded MTA route IDs.
 - Extend the UI to show weather or a secondary data source in the top header area instead of only date/time.
 - Custom PCB design in KiCad should be feasible by preserving the MXCHIP SPI/GPIO wiring and HUB75 pin mappings from this repo.
