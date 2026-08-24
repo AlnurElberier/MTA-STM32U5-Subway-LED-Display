@@ -135,7 +135,7 @@ configRUN_TIME_COUNTER_TYPE getIRQTimeCounterValue(void)
 
 void vPetWatchdog(void)
 {
-#if defined(HAL_IWDG_MODULE_ENABLED)
+#if defined(HAL_IWDG_MODULE_ENABLED) && 0 // AE
   extern IWDG_HandleTypeDef hiwdg;
   HAL_IWDG_Refresh( &hiwdg );
 #endif
